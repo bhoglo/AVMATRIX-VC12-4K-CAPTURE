@@ -104,3 +104,20 @@ Testing found and fixed four more problems:
 | Status thread, IOMMU faults | `I` state; 0 faults |
 
 Correction to the first suspend diagnosis: after the unplanned suspend, starting a new stream did not recover the card. That was because the Switch 2 was not sending a signal at the time (status register 5 read 0); the card appears to ignore register writes without HDMI input. Once the console was restarted, the existing re-init on stream start recovered it. The suspend callbacks are still needed for captures that are running across a suspend, as the test above shows.
+
+### Follow-up checks (driver `b8cb4e6`, srcversion `1DD79E963BB11356BDB7BF8`)
+
+| Check | Result |
+|---|---|
+| `V4L2_CID_DV_RX_POWER_PRESENT` | Present as `power_present`, read-only bitmask, value 1 with the Switch 2 connected |
+| Output quantization (5 frames with content, Switch 2 RGB Range: Automatic) | Y spans 1–254 with values below 16 and above 235, so the card delivers **full-range** YUV. The driver still reports the default (limited) quantization; OBS's Color Range should be Full. |
+
+Registers documented by the mainline `hws` driver (drivers/media/pci/hws/hws_reg.h, for AVMatrix's multi-channel cards), read on this VC12-4K:
+
+| Register | Mainline meaning | Value here |
+|---|---|---|
+| 8 | HDCP detected (bit per channel) | 0 (Switch 2, no HDCP) |
+| 9 | DMA max size | 0x00044000 |
+| 25, 26 | buffer base / per-channel DMA address (zero-copy doorbell in mainline) | 0, 0 (unused by this driver) |
+| 110 | input frame rate | 60 (integer fps) |
+| 120, 130 | programmed output size and rate | 1920×1080, 60 (never written by this driver; frames still arrive at 3840×2160) |
