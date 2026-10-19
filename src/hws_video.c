@@ -721,6 +721,10 @@ static int hws_release(struct file *file)
  * saturation, hue, contrast and brightness, one byte each (format from the
  * vendor's commented-out code; it reads 0x80808080 at power-up). The control
  * framework handles QUERYCTRL, G/S_(EXT_)CTRLS and control events.
+ *
+ * Writing the hue byte has no visible effect on HDMI input (tested on FPGA
+ * version 122; the register family comes from the vendor's analog capture
+ * designs), so there is no hue control and the byte stays at its neutral 128.
  */
 #define HWS_PICTURE_REG(ch)	(CVBS_IN_BASE + (91 + 2 * (ch)) * PCIE_BARADDROFSIZE)
 
@@ -728,11 +732,11 @@ static int hws_s_ctrl(struct v4l2_ctrl *ctrl)
 {
 	struct hws_video *videodev = container_of(ctrl->handler, struct hws_video, ctrl_hdl);
 	u32 v = ((u32)videodev->ctrl_saturation->val << 24) |
-		((u32)videodev->ctrl_hue->val << 16) |
+		((u32)HueDefault << 16) |
 		((u32)videodev->ctrl_contrast->val << 8) |
 		(u32)videodev->ctrl_brightness->val;
 
-	/* the cluster sets all four together; write once per change */
+	/* the cluster sets all three together; write once per change */
 	videodev->m_PictureReg = v;
 	if (!videodev->dev->m_PciDeviceLost)
 		WRITE_REGISTER_ULONG(videodev->dev, HWS_PICTURE_REG(videodev->index), v);
@@ -747,22 +751,20 @@ static int hws_ctrls_init(struct hws_video *videodev)
 {
 	struct v4l2_ctrl_handler *hdl = &videodev->ctrl_hdl;
 
-	v4l2_ctrl_handler_init(hdl, 4);
+	v4l2_ctrl_handler_init(hdl, 3);
 	videodev->ctrl_brightness = v4l2_ctrl_new_std(hdl, &hws_ctrl_ops, V4L2_CID_BRIGHTNESS,
 		MIN_VAMP_BRIGHTNESS_UNITS, MAX_VAMP_BRIGHTNESS_UNITS, 1, BrightnessDefault);
 	videodev->ctrl_contrast = v4l2_ctrl_new_std(hdl, &hws_ctrl_ops, V4L2_CID_CONTRAST,
 		MIN_VAMP_CONTRAST_UNITS, MAX_VAMP_CONTRAST_UNITS, 1, ContrastDefault);
 	videodev->ctrl_saturation = v4l2_ctrl_new_std(hdl, &hws_ctrl_ops, V4L2_CID_SATURATION,
 		MIN_VAMP_SATURATION_UNITS, MAX_VAMP_SATURATION_UNITS, 1, SaturationDefault);
-	videodev->ctrl_hue = v4l2_ctrl_new_std(hdl, &hws_ctrl_ops, V4L2_CID_HUE,
-		MIN_VAMP_HUE_UNITS, MAX_VAMP_HUE_UNITS, 1, HueDefault);
 	if (hdl->error) {
 		int err = hdl->error;
 		v4l2_ctrl_handler_free(hdl);
 		return err;
 	}
-	/* one s_ctrl call writes the shared register for all four */
-	v4l2_ctrl_cluster(4, &videodev->ctrl_brightness);
+	/* one s_ctrl call writes the shared register for all three */
+	v4l2_ctrl_cluster(3, &videodev->ctrl_brightness);
 	videodev->vdev.ctrl_handler = hdl;
 	return v4l2_ctrl_handler_setup(hdl);
 }

@@ -345,10 +345,9 @@ struct hws_video{
 	int						Interlaced;
 	//------------------------
 	struct v4l2_ctrl_handler ctrl_hdl;
-	struct v4l2_ctrl *ctrl_brightness;	/* cluster: brightness, contrast, saturation, hue */
+	struct v4l2_ctrl *ctrl_brightness;	/* cluster: brightness, contrast, saturation */
 	struct v4l2_ctrl *ctrl_contrast;
 	struct v4l2_ctrl *ctrl_saturation;
-	struct v4l2_ctrl *ctrl_hue;
 	u32 m_PictureReg;	/* last value written to the picture register, 0 = never */
 	struct v4l2_dv_timings dv_timings;	/* G/S_DV_TIMINGS */
 	/* last input state seen by the status thread, for source-change events */
