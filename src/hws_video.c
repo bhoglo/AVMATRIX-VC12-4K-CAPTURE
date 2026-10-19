@@ -1064,7 +1064,7 @@ static int hws_log_status(struct file *file, void *fh)
 	else
 		v4l2_info(&videodev->v4l2_dev, "input: no usable signal\n");
 	if (hws_input_timeperframe(pdx, videodev->index, &tpf))
-		v4l2_info(&videodev->v4l2_dev, "measured frame interval: %u/%u s\n",
+		v4l2_info(&videodev->v4l2_dev, "input frame interval: %u/%u s\n",
 			  tpf.numerator, tpf.denominator);
 	v4l2_info(&videodev->v4l2_dev, "output: %dx%d, frames: %u, dropped: %u, DMA buffers: %d KiB\n",
 		  videodev->current_out_width, videodev->curren_out_height,
@@ -4764,15 +4764,30 @@ static void hws_frame_end(struct hws_pcie_dev *pdx, int ch, u64 now)
 	elapsed = now - pdx->m_RateWinStartNs[ch];
 	if (elapsed >= NSEC_PER_SEC) {
 		WRITE_ONCE(pdx->m_FrameIntervalNs[ch], div_u64(elapsed, pdx->m_RateWinFrames[ch]));
+		WRITE_ONCE(pdx->m_RateUpdatedNs[ch], now);
 		pdx->m_RateWinStartNs[ch] = now;
 		pdx->m_RateWinFrames[ch] = 0;
 	}
 }
 
+/* The card's own input rate in whole fps (register 110 + ch), 0 if unavailable. */
+static u32 hws_hw_fps(struct hws_pcie_dev *pdx, int ch)
+{
+	u32 fps;
+
+	if (!pdx->m_DeviceHW_Version || pdx->m_PciDeviceLost)
+		return 0;
+	fps = READ_REGISTER_ULONG(pdx, HWS_REG_IN_FPS(ch));
+	return fps >= 1 && fps <= 300 ? fps : 0;
+}
+
 /*
- * The measured input frame interval as a time-per-frame fraction, snapped to
- * the closest standard rate when within 0.5%. Returns false if no rate has
- * been measured yet; frames are only counted while capture runs.
+ * The input frame interval as a time-per-frame fraction. While capture runs
+ * and the measurement is current, it comes from frame-end interrupts and is
+ * snapped to a standard rate within 0.5%, which tells 59.94 from 60. When
+ * nothing captures, or the measurement is older than 2 s, the measured value
+ * would be stale after any mode change, so the card's whole-fps register is
+ * used, snapped within 2%. Returns false if neither is available.
  */
 static bool hws_input_timeperframe(struct hws_pcie_dev *pdx, int ch, struct v4l2_fract *tpf)
 {
@@ -4782,20 +4797,28 @@ static bool hws_input_timeperframe(struct hws_pcie_dev *pdx, int ch, struct v4l2
 		{ 1, 120 }, { 1, 144 }, { 1, 240 },
 	};
 	u64 meas = READ_ONCE(pdx->m_FrameIntervalNs[ch]);
-	u64 best_err = U64_MAX;
+	u64 at = READ_ONCE(pdx->m_RateUpdatedNs[ch]);
+	u64 best_err = U64_MAX, std;
+	u32 fps, tol = 200;	/* 1/200 = 0.5% */
 	int i, best = -1;
 
-	if (!meas)
-		return false;
+	if (!meas || !pdx->m_bVCapStarted[ch] || ktime_get_ns() - at > 2 * NSEC_PER_SEC) {
+		fps = hws_hw_fps(pdx, ch);
+		if (fps) {
+			meas = div_u64(NSEC_PER_SEC, fps);
+			tol = 50;	/* 2%: the register is a whole number */
+		} else if (!meas) {
+			return false;
+		}
+	}
 	for (i = 0; i < ARRAY_SIZE(standard); i++) {
-		u64 std = div_u64((u64)standard[i].numerator * NSEC_PER_SEC, standard[i].denominator);
-		u64 err = meas > std ? meas - std : std - meas;
-		if (err < best_err) {
-			best_err = err;
+		std = div_u64((u64)standard[i].numerator * NSEC_PER_SEC, standard[i].denominator);
+		if ((meas > std ? meas - std : std - meas) < best_err) {
+			best_err = meas > std ? meas - std : std - meas;
 			best = i;
 		}
 	}
-	if (best >= 0 && best_err * 200 <= div_u64((u64)standard[best].numerator * NSEC_PER_SEC,
+	if (best >= 0 && best_err * tol <= div_u64((u64)standard[best].numerator * NSEC_PER_SEC,
 						    standard[best].denominator)) {
 		*tpf = standard[best];
 	} else {
@@ -5594,7 +5617,8 @@ static int hws_dbg_status_show(struct seq_file *m, void *unused)
 		seq_printf(m, "input: %dx%d%s\n", w, h, il ? " interlaced" : "");
 	else
 		seq_puts(m, "input: no usable signal\n");
-	seq_printf(m, "measured frame interval: %llu ns\n", READ_ONCE(pdx->m_FrameIntervalNs[0]));
+	seq_printf(m, "measured frame interval: %llu ns, card register 110: %u fps\n",
+		   READ_ONCE(pdx->m_FrameIntervalNs[0]), hws_hw_fps(pdx, 0));
 	seq_printf(m, "capture: %s, output %dx%d\n", pdx->m_bVCapStarted[0] ? "running" : "stopped",
 		   v->current_out_width, v->curren_out_height);
 	seq_printf(m, "frames: %u, lost: %u\n", READ_ONCE(pdx->m_FrameSeq[0]), READ_ONCE(pdx->m_FramesDropped[0]));

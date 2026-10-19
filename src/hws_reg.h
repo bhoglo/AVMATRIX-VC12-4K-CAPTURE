@@ -157,5 +157,7 @@ typedef enum {
  * (4.25 MiB), past the end of a 4 MiB buffer.
  */
 #define HWS_REG_DMA_MAX_SIZE	(CVBS_IN_BASE + 9 * PCIE_BARADDROFSIZE)
+/* Register 110 + ch: input frame rate in whole fps, FPGA 122 and later (stage 4.2) */
+#define HWS_REG_IN_FPS(ch)	(CVBS_IN_BASE + (110 + (ch)) * PCIE_BARADDROFSIZE)
 
 #endif
