@@ -354,3 +354,23 @@ The PS5 sent 3840×2160p60 while OBS captured 3840×2160, so the IRQ thread copi
 - With fake sysfs topologies the choice is: one L3 domain, no change; two equal domains (non-X3D or dual V-cache), no change; X3D, the smaller domain's CPUs.
 
 After a reboot, the udev rule had pinned IRQ 202 to 8–15,24–31 at driver bind: the IRQ and its handler thread ran on CPU 9, and irqbalance started with `--banmod=HwsUHDX1Capture`. OBS captured normally.
+
+### 4.4: zero-copy, round 1 (driver `821f2d1`, srcversion `3538EA2396BF2C18A6E6C22`)
+
+PS5 at 3840×2160p59.94, OBS closed, IOMMU `DMA-FQ`. `tests/zctest.sh` ran 600 frames per case through `framecheck.py`. It switched the `zero_copy` parameter at runtime and read the IRQ thread's CPU time from `/proc` (10 ms resolution).
+
+| Case | Delivery | IRQ thread CPU, 600 frames | Zero-copy frames |
+|---|---|---|---|
+| Copy path (`zero_copy=0`, MMAP) | 59.94 fps, 600 unique, no gaps, deltas 16.67–16.70 ms | 540 ms | — |
+| Zero-copy (MMAP) | 59.94 fps, 600 unique, no gaps, deltas 16.50–16.87 ms | 0 ms | 597 (the first 3 waited for 2 stable frames) |
+| Zero-copy plus a second MMAP stream | both 59.94 fps, 600 unique, no gaps | 570 ms (the second stream's copy) | 597 |
+| USERPTR (copy path, vmalloc queue) | 59.94 fps, 600 unique, no gaps | 510 ms | — |
+| 100 start/stop cycles, 1–7 frames each | none failed | — | 140 |
+
+- **Correctness:**
+  - No failed zero-copy frames, no late register writes, and no buffer outside the window.
+  - Kernel log: no `IO_PAGE_FAULT`, no stray-DMA canary hits, no warnings.
+- **Picture:** a frame captured by zero-copy and one by the copy path render identically: the full 4K home screen, no seams at the quarter boundaries. Mean luma per quarter matches, and no stale-half mark word is left in the picture.
+- **Register 9:**
+  - read 0x3F500 during 4K capture: the largest quarter, 4149248 bytes;
+  - read 0xFE00 before the first stream: the 1080p default lengths set at load.
