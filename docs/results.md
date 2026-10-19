@@ -175,3 +175,18 @@ The status thread logged two canary hits, both in buffer 3 at offset 0x440000–
 The kernel logs of two boots before stage 1 hold 10 and 20 faults: 256-byte writes climbing from 0xfec00000 to 0xfec01000 and beyond, one DMA run off the end of a 4 MiB buffer at 0xfe800000.
 
 Diagnosis: until the first status poll after a capture start, the DMA quarter lengths were still those of the 1920×1080 probe default, so the card ran the 4K quarter on to register 9 × 16 (0x440000) and ended with a 2 KiB block there. With 4.5 MiB buffers that is inside the buffer; with the old 4 MiB buffers it was past the end, which produced the faults. `7df0340` programs the lengths before the engine starts and sets register 9 so a run ends inside the buffer.
+
+### Operator session 4: the fix (driver `7df0340`, srcversion `CD2364BD0210131C9174DE0`)
+
+OBS started after boot, then the Switch 2 was switched to 1080p and back to 4K while OBS captured.
+
+| Check | Result |
+|---|---|
+| First capture start after boot | **No canary hits** (before the fix: the 2 KiB block at 0x440000 every time) |
+| Register 9 | 0x47d00: an over-long run stops at offset 0x47d000 |
+| Switch to 4K while capturing | The 4K frame DMA'd with the 1080p lengths ran on in buffer 3 to offset 0x47d7ff and stopped there: register 9 × 16 plus the final 2 KiB block, ending where the audio ring starts. Before the fix the same run ended at 0x4407ff. |
+| Other hits at the switches | Only inside the buffers: the last 4K frames written after the switch to 1080p (offsets up to 0x3f47ff, the end of a 4K quarter), and 2 KiB blocks just past each quarter's data |
+| `IO_PAGE_FAULT` | 0 |
+| Frames | 3724, lost 2 (at the switches), no buffer missing for the consumer |
+
+So the card's over-long runs end at register 9 × 16 + 2 KiB, and with register 9 set they stay inside the buffer at every resolution change, also with the 4 MiB fallback buffers (limit 0x3fd000 + 2 KiB, below the audio ring).
