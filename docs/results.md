@@ -68,3 +68,20 @@ Every frame has its own sequence number, with no gaps and steady 16.67 ms spacin
 | "StartKSThread task" state | `I` (was `D`) |
 | `IO_PAGE_FAULT` this boot | **0**, including OBS starting with console audio running. Before stage 1, every OBS start or stop produced a burst at IOVA 0xfec00000. The change to 4.5 MiB buffers (1.6) moved the buffer layout, so this is a lead for stage 3.5, not proof of a fix. |
 | OBS session (operator, ~10 min, 4K source, console audio on the direct path) | The operator reported everything fine. Afterwards PipeWire ERR counters were **0** on the headphone output, the capture card, and the console-audio loopback. Load average 0.51 with OBS running. |
+
+## Stage 2: `feat/input-status`
+
+Driver `5af2e2b`, module srcversion `3A9DCD14A99FB5E1BFA5477`, after a reboot on 2026-10-19, checked while OBS was capturing 3840×2160.
+
+| Check | Result |
+|---|---|
+| `--query-dv-timings` | 3840×2160 progressive, 594 MHz, 60.00 fps, CTA-861 (VIC 97) |
+| `--list-inputs` | `HDMI`, status ok, capability DV timings (was a camera input with an NTSC standard) |
+| `--get-parm` | 60/1 with the `timeperframe` capability (measured rate) |
+| `--list-formats-ext` | Native 3840×2160 listed first; intervals 60, 30, 20, 15 fps (was 15–240 fps for every size) |
+| `bus_info` | `PCI:0000:0b:00.0` |
+| `--log-status` | Prints input timings, the measured 1/60 s interval, output size, frames (3673) and drops (0), open and streaming handles, and controls |
+| OBS | Shows the DV timings list and the controls |
+| Brightness, contrast, saturation | Change the image (operator) and read back in register 91 |
+| Hue | Register 91 reads back the written value, but the image does not change. The control is removed and the byte stays at 128 (commit after `5af2e2b`). OBS had saved hue = 0 from the old driver, whose controls did nothing, and re-applied it to the hardware. |
+| Source-change event, `v4l2-compliance`, `S_PARM` 30 fps, stage 1 regression runs | Pending (need OBS closed and a resolution switch) |
