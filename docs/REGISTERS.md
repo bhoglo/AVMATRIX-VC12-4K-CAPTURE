@@ -105,7 +105,7 @@ Read from photos of both sides of a VC12-4K with the heatsink off (PCB `VC12-4K_
 No DRAM is visible on either side.
 
 What follows from the parts, as inferences:
-- **The FPGA can't buffer frames.** The XC7A35T has 1.8 Mbit of block RAM, about 28 lines of 4K YUYV, and there is no external memory. Every frame goes straight to host memory, which is why the frame arrives as four quarters through four DMA buffers. A scaler that only needs line buffers would fit; one that needs whole frames would not.
+- **The FPGA can't buffer frames.** The XC7A35T has 1.8 Mbit of block RAM (about 30 lines of 4K YUYV), and there is no external memory. Every frame goes straight to host memory, which is why the frame arrives as four quarters through four DMA buffers. A scaler that only needs line buffers would fit; one that needs whole frames would not.
 - **HDMI reaches the FPGA as a parallel bus.** The XC7A35T has 4 GTP transceivers, and PCIe Gen2 x4 uses all of them. So HDMI can't be terminated in the FPGA: the GSV2011 receives it and passes video to the FPGA over the many parallel traces between them. A reseller page describes the GSV1011, its pin-compatible HDMI 1.4 sibling, as having an LVDS/TTL video bus and I²S/SPDIF/TDM audio.
 - **EDID, InfoFrames, HDCP and colour handling live in the GSV2011.** The same page lists colour-space conversion, deinterlacing and down-conversion for the GSV1011. They are configured by whatever programs the GSV2011, probably the unmarked microcontroller, and not by the host. The Windows driver has no I²C or EDID access, and no host register for these was found. The fixed full-range output (stage 4.5) and the 1920×540 interlaced field format are presumably set there.
 - **The GSV2011 has no public datasheet.**
