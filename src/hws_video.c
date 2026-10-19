@@ -4141,8 +4141,19 @@ static int SetVideoFormteSize(struct hws_pcie_dev *pdx,int ch,int w,int h)
 
 	hf_size2 = (w*h*2)/(4*16*128);
 	hf_size2 = w*h*2 -(hf_size2*16*128*3);
-	//if((hf_size2 <0) ||(hf_size2 > m_MaxHWVideoBufferSize)||(hf_size >m_MaxHWVideoBufferSize))
 	if(hf_size2 <0)
+	{
+		return -1;
+	}
+	hf_size2 = hf_size2/(16*128);
+	hf_size2 = (hf_size2+1)*16*128;
+	/*
+	 * The card DMAs each quarter into one buffer whose last
+	 * MAX_AUDIO_CAP_SIZE bytes hold the audio ring. A larger quarter would
+	 * be written past the buffer, so never program it.
+	 */
+	if(hf_size > pdx->m_MaxHWVideoBufferSize - MAX_AUDIO_CAP_SIZE ||
+	   hf_size2 > pdx->m_MaxHWVideoBufferSize - MAX_AUDIO_CAP_SIZE)
 	{
 		return -1;
 	}
@@ -4159,9 +4170,6 @@ static int SetVideoFormteSize(struct hws_pcie_dev *pdx,int ch,int w,int h)
 	pdx->m_format[0].HLAF_SIZE = hf_size;
 	pdx->m_format[1].HLAF_SIZE = hf_size;
 	pdx->m_format[2].HLAF_SIZE = hf_size;
-
-	hf_size2 = hf_size2/(16*128);
-	hf_size2 = (hf_size2+1)*16*128;
 	pdx->m_format[3].HLAF_SIZE = hf_size2;
 	return 1;
 
@@ -4217,6 +4225,35 @@ static void DmaMemFreePool(struct hws_pcie_dev *pdx)
 	pdx->m_bBufferAllocate = FALSE;
 }
 
+/*
+ * Allocate the m_nMaxChl DMA buffers of @size bytes. The card reaches host
+ * memory through a table of 512 MiB windows (SetDMAAddress), so a buffer must
+ * not cross a window boundary. On any failure, frees what it allocated.
+ */
+static int dma_alloc_video_buffers(struct hws_pcie_dev *pdx, int size)
+{
+	int i;
+	for(i=0; i<pdx->m_nMaxChl; i++)
+	{
+		pdx->m_pbyVideoBuffer[i] = dma_alloc_coherent(&pdx->pdev->dev, size, &pdx->m_pbyVideo_phys[i], GFP_KERNEL | __GFP_NOWARN);
+		if(!pdx->m_pbyVideoBuffer[i] ||
+		   ((u64)pdx->m_pbyVideo_phys[i] >> 29) != (((u64)pdx->m_pbyVideo_phys[i] + size - 1) >> 29))
+		{
+			if(pdx->m_pbyVideoBuffer[i])
+				dma_free_coherent(&pdx->pdev->dev, size, pdx->m_pbyVideoBuffer[i], pdx->m_pbyVideo_phys[i]);
+			pdx->m_pbyVideoBuffer[i] = NULL;
+			while(--i >= 0)
+			{
+				dma_free_coherent(&pdx->pdev->dev, size, pdx->m_pbyVideoBuffer[i], pdx->m_pbyVideo_phys[i]);
+				pdx->m_pbyVideoBuffer[i] = NULL;
+			}
+			return -1;
+		}
+	}
+	pdx->m_MaxHWVideoBufferSize = size;
+	return 0;
+}
+
 static int DmaMemAllocPool(struct hws_pcie_dev *pdx)
 {
 	uint8_t i, k;
@@ -4229,15 +4266,25 @@ static int DmaMemAllocPool(struct hws_pcie_dev *pdx)
 	}
 	/* from here on a failure frees whatever was allocated */
 	pdx->m_bBufferAllocate = TRUE;
-	//------------
+	if(dma_alloc_video_buffers(pdx, MAX_MM_VIDEO_SIZE_DCI) == 0)
+	{
+		pdx->m_MaxInputWidth = pdx->m_DeviceHW_Version ? 4096 : 3840;
+		dev_info(&pdx->pdev->dev, "DMA buffers: %d x %d KiB, input up to %dx2160\n",
+			 pdx->m_nMaxChl, MAX_MM_VIDEO_SIZE_DCI/1024, pdx->m_MaxInputWidth);
+	}
+	else if(dma_alloc_video_buffers(pdx, MAX_MM_VIDEO_SIZE) == 0)
+	{
+		pdx->m_MaxInputWidth = 3840;
+		dev_warn(&pdx->pdev->dev, "4.5 MiB DMA buffers unavailable (no IOMMU translation or CMA); "
+			 "4096-wide input will be captured at 3840\n");
+	}
+	else
+	{
+		printk("m_pbyVideoBuffer mem Allocate Fail ************\n");
+		goto fail;
+	}
 	for(i=0; i<pdx->m_nMaxChl; i++)
 	{
-		pdx->m_pbyVideoBuffer[i] = dma_alloc_coherent(&pdx->pdev->dev, pdx->m_MaxHWVideoBufferSize, &pdx->m_pbyVideo_phys[i], GFP_KERNEL);
-		if(pdx->m_pbyVideoBuffer[i]== NULL)
-		{
-			printk("m_pbyVideoBuffer[%d] mem Allocate Fail ************\n", i);
-			goto fail;
-		}
 		phy_addr = pdx->m_pbyVideo_phys[i];
 		pdx->m_dwVideoBuffer[i] = 	  ((u64)phy_addr)&0xFFFFFFFF;
 		pdx->m_dwVideoHighBuffer[i] = ((u64)phy_addr>>32)&0xFFFFFFFF;
@@ -5447,15 +5494,15 @@ static void SetDMAAddress(struct hws_pcie_dev *pdx)
 }
 
 //-----------------------------------
-static void ChangeVideoSize(struct hws_pcie_dev *pdx,int ch,int w,int h,int interlace)
+static int ChangeVideoSize(struct hws_pcie_dev *pdx,int ch,int w,int h,int interlace)
 {
 	int j;
 	int halfframeLength[4];
 	unsigned long flags;
-	if(ch != 0) return;
+	if(ch != 0) return -1;
 	if(SetVideoFormteSize(pdx,ch,w,h) != 1)
 	{
-		return;
+		return -1;
 	}
 	spin_lock_irqsave(&pdx->videoslock[ch], flags);
 	for (j = 0; j<MAX_VIDEO_QUEUE; j++)
@@ -5474,8 +5521,7 @@ static void ChangeVideoSize(struct hws_pcie_dev *pdx,int ch,int w,int h,int inte
 	WRITE_REGISTER_ULONG(pdx,(DWORD)(CBVS_IN_BUF_BASE2 + (1*PCIE_BARADDROFSIZE)), halfframeLength[1]); //Buffer 1 address
 	WRITE_REGISTER_ULONG(pdx,(DWORD)(CBVS_IN_BUF_BASE2 + (2*PCIE_BARADDROFSIZE)), halfframeLength[2]); //Buffer 1 address
 	WRITE_REGISTER_ULONG(pdx,(DWORD)(CBVS_IN_BUF_BASE2 + (3*PCIE_BARADDROFSIZE)), halfframeLength[3]); //Buffer 1 address
-
-
+	return 0;
 }
 
 static int Get_Video_Status(struct hws_pcie_dev *pdx,unsigned int  ch)
@@ -5501,21 +5547,32 @@ static int Get_Video_Status(struct hws_pcie_dev *pdx,unsigned int  ch)
 		value =  READ_REGISTER_ULONG(pdx,(DWORD)(CVBS_IN_BASE + (offset*PCIE_BARADDROFSIZE)));
 		res_w = value&0xFFFF;
 		res_h = (value>>16)&0xFFFF;
-		if(pdx->m_DeviceHW_Version==0)
-		{
-			if(res_w>3840) res_w = 3840;
-			if(res_h>2160) res_h = 2160;
-		}
+		/*
+		 * Version-0 cards, and cards whose DMA buffers had to fall back to
+		 * 4 MiB, capture 4096-wide input as 3840 wide (the vendor's v0
+		 * behaviour) so a quarter frame always fits its buffer.
+		 */
+		if(res_w > pdx->m_MaxInputWidth) res_w = pdx->m_MaxInputWidth;
+		if(pdx->m_DeviceHW_Version==0 && res_h > 2160) res_h = 2160;
+		no_video = 0;
 		if(((res_w <=MAX_VIDEO_HW_W) &&(res_h<=MAX_VIDEO_HW_H)&&(interlace==0))||((res_w <=MAX_VIDEO_HW_W) &&(res_h*2<=MAX_VIDEO_HW_H)&&(interlace==1)))
 		{
 			if((res_w !=pdx->m_pVCAPStatus[ch][0].dwWidth )||(res_h!= pdx->m_pVCAPStatus[ch][0].dwHeight)||(pdx->m_pVCAPStatus[ch][0].dwinterlace!=interlace))
 			{
-				ChangeVideoSize(pdx,ch,res_w,res_h,interlace);
-
+				if(ChangeVideoSize(pdx,ch,res_w,res_h,interlace) < 0)
+					no_video = 1;
 			}
 		}
-
-		no_video = 0;
+		else
+		{
+			no_video = 1;
+		}
+		if(no_video && pdx->m_UnsupportedRes != (((u32)res_w<<16)|res_h))
+		{
+			pdx->m_UnsupportedRes = ((u32)res_w<<16)|res_h;
+			dev_warn(&pdx->pdev->dev, "unsupported input %dx%d%s, showing no-signal frames\n",
+				 res_w, res_h, interlace ? "i" : "p");
+		}
 		//printk("[MV-X1]-[ch-%d]W=%d H=%d interlace =%d %dx%d \n",ch,res_w,res_h,interlace,pdx->m_pVCAPStatus[ch][0].dwWidth, pdx->m_pVCAPStatus[ch][0].dwHeight);
 	}
 	else

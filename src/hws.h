@@ -143,6 +143,12 @@ typedef unsigned char BOOL;
 #define AUDIO_ONE_QUEUE_SIZE		8*CUR_AUDIO_PACKET_LENGTH
 
 #define MAX_MM_VIDEO_SIZE			0x400000	//4M
+/*
+ * Each DMA buffer holds one quarter of a frame plus the audio ring at its end.
+ * A 4096x2160 quarter is 4,425,728 bytes, so 4 MiB only fits 3840x2160; 4.5 MiB
+ * fits both. Larger than MAX_PAGE_ORDER, so it needs IOMMU translation or CMA.
+ */
+#define MAX_MM_VIDEO_SIZE_DCI		0x480000	//4.5M
 
 #define MAX_VIDEO_HW_W 4096
 #define MAX_VIDEO_HW_H 2160
@@ -400,6 +406,8 @@ struct hws_pcie_dev {
 	u32 m_Device_PortID;
 	//int  m_IsHDModel; // 0 SD 1. 720p 2 1080p 3 2K 4 4K
 	int  m_MaxHWVideoBufferSize;
+	int  m_MaxInputWidth;		/* 4096 with 4.5 MiB DMA buffers, else 3840 */
+	u32  m_UnsupportedRes;		/* last unsupported input (w<<16|h), warned once */
 	int m_nMaxChl;
 	int m_nCurreMaxVideoChl;
 	int m_nCurreMaxLineInChl;
