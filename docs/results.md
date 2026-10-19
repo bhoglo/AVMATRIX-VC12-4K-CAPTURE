@@ -214,3 +214,29 @@ Driver `7df0340` (DKMS `1.0.0.230324.3.0`). The PC's GPU (AMD, HDMI-A-2) drove t
 - **4096×2160 is scaled by the card.** With the GPU sending 4096×2160p60 (594 MHz, h-total 4400), register 90 reads 3840×2160 and register 110 reads 61. A captured frame shows the whole desktop scaled to 3840 wide and letterboxed (black bars about 67 px top and bottom, matching 3840×2025). The scaling happens before the FPGA, presumably in the GSV2011. The driver never sees 4096-wide frames from this card.
 - **DV timings go stale after a mode change.** With no stream running, `QUERY_DV_TIMINGS` reported each new mode with the previous mode's frame rate (for example 2560×1440 as "30.00 fps", 110.6 MHz synthesized). The measured rate only updates while capturing. Stage 4.2 fixes this.
 - **Stray DMA.** The only canary hits were at the moment the cable was switched from the console to the PC with OBS capturing (12:35:20). Both were inside the buffers: the end of a 4K quarter in buffer 0, and a run in buffer 3 that stopped at the register 9 limit. 0 `IO_PAGE_FAULT`.
+
+## Stage 4 round 1 (`feat/hw-status`)
+
+Driver `46f7ec9` (DKMS `1.0.0.230324.4.0`, srcversion `78ADE6E8CAD81BA4F1E78AA`), after a reboot on 2026-10-19 with the Switch 2 at 3840×2160p60.
+
+| Check | Result |
+|---|---|
+| Frame delivery (`run-baseline.sh`) | 60.00 fps in all three runs, every frame unique, no gaps; 4K native delta stdev 0.00 ms |
+| `v4l2-compliance` (no `-s`) | 47 / 48 (the by-design `reqbufs != EBUSY`) |
+| Status thread, IOMMU faults | `I` state; 0 faults |
+| 4.2, before any capture this boot | `--query-dv-timings` 3840×2160 at 60.00 fps and `--get-parm` 60/1, from register 110 (no measurement yet) |
+| 4.1, Switch 2 (no HDCP) | Register 8 reads 0; input status ok; debugfs `HDCP: not active`. The PS5 test is still to do. |
+
+### 4.5: colour range from the Switch 2
+
+Three 3840×2160 frames of the home screen per setting, Y (luma) statistics:
+
+| Switch 2 RGB Range | Y min–max | 0.1% / 99.9% points | Below 16 | Above 235 |
+|---|---|---|---|---|
+| Automatic | 1–254 | 1 / 254 | 1.78% | 4.22% |
+| Limited | 1–254 | 1 / 254 | 1.82% | 4.45% |
+| Full | 1–254 | 1 / 254 | 1.36% | 4.21% |
+
+The card delivers full range whatever the Switch 2 setting. Either the Switch 2 sends YCbCr, which its RGB Range setting does not affect, or the card's HDMI chip converts every input to full range. A PS5 with its RGB range set to Limited would tell the two apart. `96dd3f1` reports full-range Rec. 709 in the format.
+
+(A first Limited reading taken on the TV Output settings screen gave 0.1% / 99.9% points of 17 / 246. That screen has no full black or white, so the reading reflected the content, not the range.)
