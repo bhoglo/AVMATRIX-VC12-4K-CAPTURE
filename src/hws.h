@@ -196,13 +196,9 @@ typedef struct TAG_VCAP_STATUS_INFO
 typedef struct 
 {
 	uint8_t		*m_pVideoBufData[MAX_VIDEO_QUEUE];
-	uint8_t     *m_pVideoData_area[MAX_VIDEO_QUEUE];
 	uint8_t		*m_pVideoBufData1[MAX_VIDEO_QUEUE];
-	uint8_t     *m_pVideoData_area1[MAX_VIDEO_QUEUE];
 	uint8_t		*m_pVideoBufData2[MAX_VIDEO_QUEUE];
-	uint8_t     *m_pVideoData_area2[MAX_VIDEO_QUEUE];
 	uint8_t		*m_pVideoBufData3[MAX_VIDEO_QUEUE];
-	uint8_t     *m_pVideoData_area3[MAX_VIDEO_QUEUE];
 	int         m_VideoBufferSize[4];
 	VCAP_STATUS_INFO pStatusInfo[MAX_VIDEO_QUEUE];
 	DWORD        m_nVideoIndex;
@@ -213,7 +209,6 @@ typedef struct
 typedef struct 
 {
 	uint8_t		*m_pAudioBufData[MAX_AUDIO_QUEUE];
-	uint8_t     *m_pAudioData_area[MAX_AUDIO_QUEUE];
 	ACAP_STATUS_INFO pStatusInfo[MAX_AUDIO_QUEUE];
 	DWORD           m_nAudioIndex;
 	DWORD		dwisRuning;
