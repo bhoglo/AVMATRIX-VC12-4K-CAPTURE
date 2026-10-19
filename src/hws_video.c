@@ -5010,23 +5010,31 @@ pdx->m_bChangeVideoSize[i] = 0;
 //static irqreturn_t irqhandler(int irq, struct uio_info *info)
 /*
  * Called from the interrupt handler when a frame completes. Besides the frame
- * timestamp, measures the input frame rate: frames are counted over windows of
- * about a second, which resolves 60.00 from 59.94 fps (0.1% apart) despite
- * interrupt jitter. A gap longer than 200 ms (signal loss, capture restart)
- * starts a new window.
+ * timestamp, measures the input frame rate: frame periods are counted over
+ * windows of about a second, which resolves 60.00 from 59.94 fps (0.1% apart)
+ * despite interrupt jitter. A frame-end interrupt can be missed (the half-frame
+ * toggle is only sampled when the tasklet is idle), so each interval counts as
+ * however many periods it spans, rounded, against the shortest interval seen in
+ * the window; a plain count read one missed interrupt per second as 59 fps.
+ * A gap longer than 200 ms (signal loss, capture restart) starts a new window.
  */
 static void hws_frame_end(struct hws_pcie_dev *pdx, int ch, u64 now)
 {
 	u64 prev = pdx->m_FrameEndNs[ch];
-	u64 elapsed;
+	u64 elapsed, d, unit;
 
 	pdx->m_FrameEndNs[ch] = now;
 	if (!prev || now - prev > 200 * NSEC_PER_MSEC || !pdx->m_RateWinStartNs[ch]) {
 		pdx->m_RateWinStartNs[ch] = now;
 		pdx->m_RateWinFrames[ch] = 0;
+		pdx->m_RateMinDeltaNs[ch] = 0;
 		return;
 	}
-	pdx->m_RateWinFrames[ch]++;
+	d = now - prev;
+	if (!pdx->m_RateMinDeltaNs[ch] || d < pdx->m_RateMinDeltaNs[ch])
+		pdx->m_RateMinDeltaNs[ch] = d;
+	unit = pdx->m_RateMinDeltaNs[ch];
+	pdx->m_RateWinFrames[ch] += max_t(u32, 1, (u32)div64_u64(d + unit / 2, unit));
 	elapsed = now - pdx->m_RateWinStartNs[ch];
 	if (elapsed >= NSEC_PER_SEC) {
 		WRITE_ONCE(pdx->m_FrameIntervalNs[ch], div_u64(elapsed, pdx->m_RateWinFrames[ch]));

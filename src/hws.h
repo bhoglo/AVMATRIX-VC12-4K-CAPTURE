@@ -470,6 +470,7 @@ struct hws_pcie_dev {
 	/* input frame rate, measured from frame-end interrupts over ~1 s windows */
 	u64       m_RateWinStartNs[MAX_VID_CHANNELS];
 	u32       m_RateWinFrames[MAX_VID_CHANNELS];
+	u64       m_RateMinDeltaNs[MAX_VID_CHANNELS];	/* shortest frame interval in the window */
 	u64       m_FrameIntervalNs[MAX_VID_CHANNELS];	/* last measured, 0 = unknown */
 	uint8_t   m_ResumeVideo[MAX_VID_CHANNELS];	/* capture state saved across system sleep */
 	uint8_t   m_ResumeAudio[MAX_VID_CHANNELS];
