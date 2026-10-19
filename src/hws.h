@@ -198,6 +198,8 @@ typedef struct TAG_VCAP_STATUS_INFO
 	DWORD       dwWidth; 
 	DWORD       dwHeight;
 	DWORD	    dwinterlace;
+	u64         tsNs;	/* CLOCK_MONOTONIC at the frame-end interrupt */
+	u32         seq;	/* per-channel frame number */
 }VCAP_STATUS_INFO, *PVCAP_STATUS_INFO;
 typedef struct 
 {
@@ -452,6 +454,8 @@ struct hws_pcie_dev {
 	int       m_nRDVideoIndex[MAX_VID_CHANNELS];
 	int        m_nVideoBufferIndex[MAX_VID_CHANNELS];
 	int       m_nVideoHalfDone[MAX_VID_CHANNELS];
+	u64       m_FrameEndNs[MAX_VID_CHANNELS];	/* set by irqhandler at the frame-end half */
+	u32       m_FrameSeq[MAX_VID_CHANNELS];	/* next frame number, under videoslock */
 	uint8_t	  m_dwAudioField[MAX_VID_CHANNELS];
 	uint8_t   m_nAudioBusy[MAX_VID_CHANNELS];
 	uint8_t   m_nAudioBufferIndex[MAX_VID_CHANNELS];
