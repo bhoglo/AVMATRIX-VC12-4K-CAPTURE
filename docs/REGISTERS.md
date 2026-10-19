@@ -120,6 +120,29 @@ What follows from the parts, as inferences:
   The EDID, register and control chapters are not in the excerpts. The card uses a fraction of this: it delivers 8-bit 4:2:2 and 48 kHz stereo, presumably as the microcontroller configures it.
 - **Registers 120 and 130 may drive the GSV2011's downscaler.** The FPGA has no frame memory, but the HDMI chip can downscale 4K to 2K before the video reaches it. The Windows driver writes the requested size to register 120 every poll, yet sizes the DMA from the input-size register. Both fit if the microcontroller reads register 120, sets up the downscaler, and the input-size register then reports the smaller size. Stage 4.3's probe tests this: write 1920×1080 to register 120 during a 4K stream and watch whether register 90 changes.
 
+## EDID
+
+Read 2026-10-19 by connecting a PC's HDMI output to the card's input (`/sys/class/drm/card1-HDMI-A-2/edid`, 256 bytes, decoded with `edid-decode`). This is what the card tells a source it accepts. It probably lives in the microcontroller's firmware; the host has no way to change it.
+
+| Field | Value |
+|---|---|
+| Identity | Manufacturer "UHD", model 8193, made week 30 of 2020, name "UHD"; EDID 1.3 plus one CTA-861.3 block |
+| Preferred mode | 3840×2160 at 60 Hz (594 MHz) |
+| Other detailed modes | 1920×1080 at 120 Hz, 2560×1440 at 59.95 and 144.01 Hz (595.5 MHz), 1920×1080 at 239.96 Hz (571 MHz) |
+| CTA video modes | 3840×2160 at 24/25/30/50/60 Hz; 4096×2160 at 25/30/50/60 Hz; 1920×1080 at 24/25/30/50/60/120 Hz and 1080i50/60; 2560×1080 at 60 Hz; 1280×720 at 50/60 Hz; 720×576, 720×480, 640×480, 576i, 480i. **No 2560×1440 at 120 Hz.** |
+| Range limits | 50–240 Hz vertical, 30–222 kHz horizontal, 600 MHz pixel clock |
+| HDMI | HDMI 2.0 (HF-VSDB): 600 MHz TMDS character rate, SCDC; deep colour 30/36-bit 4:4:4 and 10/12-bit 4:2:0; 4:2:0 at 4K50/60 |
+| VRR | VRRmin 4 Hz, VRRmax 120 Hz |
+| Colour | YCbCr 4:4:4 and 4:2:2; BT.2020 YCC and RGB colorimetry; HDR static metadata: SDR gamma and SMPTE ST 2084 (PQ) |
+| Quantization | RGB and YCbCr quantization both selectable (QS = 1, QY = 1): the source chooses the range and signals it in the AVI InfoFrame |
+| Audio | LPCM only: 2 channels, 48 kHz, 16/20/24-bit |
+
+What follows:
+- **High refresh rates.** Sources can pick 1080p120 (VIC 63), 1080p240, 1440p144 and 4096×2160p60, but not 1440p120 (stage 4.8).
+- **Colour range.** Because the range is selectable, the console decides it. The full-range result with the Switch 2 on Automatic is probably the console's choice passed through, not something fixed in the card (stage 4.5).
+- **HDR and VRR.** A console with HDR on will send PQ/BT.2020, and one with VRR on will send variable frame timing. The card delivers 8-bit 4:2:2 and the driver cannot see the InfoFrames, so HDR shows washed out, and the driver's fixed-rate assumptions don't hold under VRR. Turn both off on the console for capture (H.1).
+- **Audio.** Sources send 48 kHz stereo at most. Multichannel console audio would need a different EDID, which the host can't set.
+
 ## Vendor ancestry
 
 This driver's names come from Windows:
