@@ -336,15 +336,16 @@ struct hws_video{
 	spinlock_t				slock;
 	v4l2_std_id				std;  //V4L2_STD_NTSC_M
 	u32						pixfmt; //V4L2_PIX_FMT_YUYV(fourcc)
-	int                     queryIndex;
 	int						index;
 	struct work_struct		videowork;
 	int						Interlaced;
 	//------------------------
-	int m_Curr_Brightness;
-	int m_Curr_Contrast;   
-	int m_Curr_Saturation;
-	int m_Curr_Hue;       
+	struct v4l2_ctrl_handler ctrl_hdl;
+	struct v4l2_ctrl *ctrl_brightness;	/* cluster: brightness, contrast, saturation, hue */
+	struct v4l2_ctrl *ctrl_contrast;
+	struct v4l2_ctrl *ctrl_saturation;
+	struct v4l2_ctrl *ctrl_hue;
+	u32 m_PictureReg;	/* last value written to the picture register, 0 = never */
 	//------------------------
 	int current_out_width;
 	int curren_out_height;
