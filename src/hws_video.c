@@ -4426,8 +4426,8 @@ static int  StartAudioCapture(struct hws_pcie_dev *pdx,int index)
  * Fill the unused gap of each DMA buffer, between its quarter and the audio
  * ring, with a known pattern; debugfs dma reports bytes the card changed
  * there. The card should never write it, so changes are stray or oversized
- * DMA writes (stage 3.5). Refilled at capture start and after the input
- * size changes, since a smaller quarter exposes old frame data.
+ * DMA writes (stage 3.5). Filled once, and again only when the input size
+ * moves the gap, so it accumulates over every capture start and stop.
  */
 #define HWS_CANARY 0xC0FFEE11u
 static void hws_fill_canary(struct hws_pcie_dev *pdx)
@@ -4435,12 +4435,13 @@ static void hws_fill_canary(struct hws_pcie_dev *pdx)
 	int i, start, end = pdx->m_MaxHWVideoBufferSize - MAX_AUDIO_CAP_SIZE;
 
 	for (i = 0; i < pdx->m_nMaxChl && i < MAX_VID_CHANNELS; i++) {
-		pdx->canary_start[i] = 0;
-		if (!pdx->m_pbyVideoBuffer[i])
+		start = pdx->m_pbyVideoBuffer[i] ? round_up(pdx->m_format[i].HLAF_SIZE, 64) : end;
+		if (start >= end) {
+			pdx->canary_start[i] = 0;
 			continue;
-		start = round_up(pdx->m_format[i].HLAF_SIZE, 64);
-		if (start >= end)
-			continue;
+		}
+		if (pdx->canary_start[i] == start)
+			continue;	/* same gap: keep what earlier captures left, to cover many start/stop cycles */
 		memset32((u32 *)(pdx->m_pbyVideoBuffer[i] + start), HWS_CANARY, (end - start) / 4);
 		pdx->canary_start[i] = start;
 	}
