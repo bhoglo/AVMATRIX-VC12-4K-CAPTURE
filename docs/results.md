@@ -1,0 +1,44 @@
+# Test results
+
+Results for each stage of [SPEC.md](SPEC.md), from `tests/run-baseline.sh` and `tests/framecheck.py`.
+
+Setup: AVMatrix VC12-4K (FPGA 122) in PCIe 2.0 x4, Ryzen 9 9950X3D, kernel 7.2.10-200.nobara.fc44. Source: Nintendo Switch 2 sending 3840×2160 at 60.00 fps, progressive.
+
+## Stage 0: baseline
+
+Driver `f40a4d5` (upstream `bd17e06` plus the audio BATCH fix), module srcversion `067B017057D5C16BA6B3FCD`. Run on 2026-10-19 with no other app using the card.
+
+### Frame delivery
+
+| Run | Delivered fps | Unique frames | Same as previous | Delta median / max (ms) | Bursts (< 4 ms) |
+|---|---|---|---|---|---|
+| 1920×1080 (scaled), 4 buffers, 300 frames | **241.87** | 76 / 300 | 224 | 1.09 / 13.88 | 225 |
+| 1920×1080 (scaled), 1 buffer, 300 frames | 60.00 | 300 / 300 | 0 | 16.67 / 16.83 | 0 |
+| 3840×2160 (native), 4 buffers, 120 frames | **92.72** | 79 / 120 | 41 | 15.62 / 16.80 | 42 |
+
+With 4 buffers, the driver fills every queued buffer with the same frame within about 1 ms per buffer. That is the copy and scale time, during which interrupts are off. The native-4K run shows fewer duplicates only because the reader (hashing 16.6 MB frames) requeues more slowly. With one buffer, delivery is clean at 60.00 fps.
+
+### v4l2-compliance (no streaming tests)
+
+`v4l2-compliance` **hung in the buffer tests**. Kernel stacks showed:
+- one thread blocked in `vb2_core_dqbuf`, called through `hws_unlocked_ioctl`, so it holds the device-wide `ioctl_lock`;
+- a second thread in `D` state in `hws_unlocked_ioctl`, waiting for that lock.
+
+This is a deadlock. Any app that waits for frames in one thread while another thread controls the device can hang the same way. Killing the process with `SIGKILL` releases it. Spec item 1.9.
+
+Failures reported before the hang:
+
+- `missing bus_info prefix ('HWS')`, twice. Stage 2.6.
+- `invalid std` and `invalid attributes for input 0`. Stage 2.1 (DV timings replace the TV standard).
+- `expected to find 0 standard controls, got 4` and a missing control in the control map. Stage 2.5 (control framework).
+- `has_frmintervals && !cap->capability`: `G_PARM` doesn't report `V4L2_CAP_TIMEPERFRAME`. Stage 2.4.
+- `q2.reqbufs(node2, 1) != EBUSY`: a second file handle may allocate buffers while another owns some. This is **by design**: the driver lets several apps capture at once. It is expected to remain.
+
+### Other
+
+| Check | Result |
+|---|---|
+| "StartKSThread task" state | `D` (counts toward load average) |
+| Load average during the run | 3.21 2.73 2.09 |
+| `IO_PAGE_FAULT` this boot | 20, unchanged by the video-only test captures. The earlier bursts happened when OBS started and stopped, which also starts and stops audio capture. That points at the audio DMA engine (stage 3.5). |
+| 10-minute OBS session | Not yet run (needs the operator). |

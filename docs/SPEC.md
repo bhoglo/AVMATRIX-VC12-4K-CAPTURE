@@ -51,6 +51,7 @@ Record these on the unmodified driver, with no other app using the card, in `doc
 | 1.6 | **DMA sizing.** Allocate 4.5 MiB per DMA buffer: the largest quarter plus the audio area. Check that each buffer stays inside one 512 MiB address-table window. If the allocation fails (no IOMMU translation and no CMA), fall back to 4 MiB and clamp the input to 3840×2160. Restore the quarter-size check. A size that still doesn't fit is reported as no signal and never programmed into the DMA engine. |
 | 1.7 | **Status thread.** Sleeps with `schedule_timeout_idle()` inside a `kthread_should_stop()` loop. |
 | 1.8 | **Queue buffers.** Allocated with `kvmalloc` and freed with `kvfree`. The page-reservation loops and the `m_pVideoData_area*` fields are removed. |
+| 1.9 | **Ioctl deadlock.** Found by the stage 0 baseline. `hws_unlocked_ioctl` holds the device-wide `ioctl_lock` across `video_ioctl2` so it can swap `vdev->queue` to the caller's queue. A blocking `DQBUF` therefore holds that lock while it waits, and any other ioctl on the device blocks until a frame arrives, forever if streaming hasn't started. `v4l2-compliance` hangs this way. Fix: remove the queue swapping. Buffer ioctls, `poll` and `mmap` call vb2 on the caller's own queue under that queue's `qmutex`; `q->lock` is set on all kernels, so vb2 drops it while waiting. `vdev->lock` is cleared, so the V4L2 core takes no device lock. Format and parameter ioctls take `video_lock` themselves. |
 
 **Done when:**
 - With 4 buffers, delivery is 59.94 fps ±0.1 and every frame is unique.
@@ -58,6 +59,7 @@ Record these on the unmodified driver, with no other app using the card, in `doc
 - A conflicting `S_FMT` during a stream returns `EBUSY`.
 - Timestamp deltas are about 16.68 ms (jitter under 1 ms), and sequence numbers step by 1 except at drops.
 - The status thread is not in `D` state.
+- `v4l2-compliance` (no `-s`) completes without hanging. The remaining failures are the stage 2 items, plus the multi-reader `reqbufs != EBUSY` result, which is by design.
 - 200 open/stream/close cycles beside a running stream leave no warning or oops in dmesg.
 - In a 10-minute OBS session, audio errors and missed frames are no worse than the baseline.
 - dmesg confirms 4.5 MiB DMA buffers.
