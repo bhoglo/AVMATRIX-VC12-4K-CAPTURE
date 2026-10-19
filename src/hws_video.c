@@ -41,6 +41,8 @@ static u32 READ_REGISTER_ULONG(struct hws_pcie_dev *pdx,u32 RegisterOffset);
 static bool hws_any_queue_busy(struct hws_video *videodev);
 static void hws_check_source_change(struct hws_video *videodev);
 static bool hws_zc_wanted(struct hws_pcie_dev *pdx);
+static const char *hws_zc_unavailable(struct hws_pcie_dev *pdx);
+static bool zero_copy;	/* module parameter, defined with hws_zc_wanted() */
 static void hws_zc_stop(struct hws_pcie_dev *pdx, bool card_stopped);
 
 //------------------------
@@ -1193,9 +1195,15 @@ static int hws_mmap(struct file *file, struct vm_area_struct *vma)
  */
 static void hws_pick_mem_ops(struct hws_vfh_ctx *ctx, u32 memory)
 {
+	struct hws_pcie_dev *pdx = ctx->video->dev;
+	const char *why;
+
 	if (vb2_is_busy(&ctx->vbq))
 		return;
-	ctx->vbq.mem_ops = memory == V4L2_MEMORY_MMAP && hws_zc_wanted(ctx->video->dev) ?
+	why = hws_zc_unavailable(pdx);
+	if (memory == V4L2_MEMORY_MMAP && READ_ONCE(zero_copy) && why)
+		dev_info_once(&pdx->pdev->dev, "zero_copy is on but unavailable: %s; using the copy path\n", why);
+	ctx->vbq.mem_ops = memory == V4L2_MEMORY_MMAP && hws_zc_wanted(pdx) ?
 			   &vb2_dma_contig_memops : &vb2_vmalloc_memops;
 }
 
@@ -3538,10 +3546,10 @@ static void hws_finish_frame(struct hws_video *v, enum vb2_buffer_state state,
  * moved on late, after that pair's next half-done interrupt; a buffer touched
  * by a late write completes with an error.
  */
-static bool zero_copy = true;
+static bool zero_copy;
 module_param(zero_copy, bool, 0644);
-MODULE_PARM_DESC(zero_copy, "let the card write frames into an app's buffers when the IOMMU allows it (default on; "
-		 "takes effect for buffers allocated afterwards)");
+MODULE_PARM_DESC(zero_copy, "let the card write frames into an app's buffers (default off; needs FPGA 122 or later "
+		 "and a translating IOMMU; takes effect for buffers allocated afterwards)");
 
 
 static bool hws_iommu_translates(struct device *dev)
@@ -3557,9 +3565,25 @@ static bool hws_iommu_translates(struct device *dev)
 	return d->type == IOMMU_DOMAIN_DMA;
 }
 
+/*
+ * Why zero-copy can't run on this card, or NULL if it can. Its safety rests
+ * on register 9 capping an over-long run at the largest quarter plus 2 KiB
+ * (HWS_ZC_SLACK), and hws_set_dma_max() programs register 9 only on FPGA
+ * 122 and later. The reset value (4.25 MiB) would let a run end far past
+ * an app's buffer.
+ */
+static const char *hws_zc_unavailable(struct hws_pcie_dev *pdx)
+{
+	if (!pdx->m_DeviceHW_Version || !pdx->m_MaxHWVideoBufferSize)
+		return "needs FPGA 122 or later";
+	if (!pdx->zc_iommu)
+		return "IOMMU not translating";
+	return NULL;
+}
+
 static bool hws_zc_wanted(struct hws_pcie_dev *pdx)
 {
-	return READ_ONCE(zero_copy) && pdx->zc_iommu;
+	return READ_ONCE(zero_copy) && !hws_zc_unavailable(pdx);
 }
 
 static u32 hws_zc_off(struct hws_pcie_dev *pdx, int q)
@@ -6114,7 +6138,7 @@ static int hws_dbg_status_show(struct seq_file *m, void *unused)
 		   READ_ONCE(pdx->irq_total), READ_ONCE(pdx->irq_video),
 		   READ_ONCE(pdx->irq_audio), READ_ONCE(pdx->irq_fifo_full));
 	seq_printf(m, "zero-copy: %s; frames %u, failed %u, late writes %u, buffers outside the window %u%s\n",
-		   !pdx->zc_iommu ? "unavailable (IOMMU not translating)" : zero_copy ? "on" : "off",
+		   hws_zc_unavailable(pdx) ?: (zero_copy ? "on" : "off"),
 		   v->zc_frames, v->zc_errors, v->zc_late, v->zc_outside,
 		   v->zc_cur || v->zc_next ? ", in use" : "");
 	seq_printf(m, "audio: gaps filled with silence: %u, silence packets: %u%s\n",
