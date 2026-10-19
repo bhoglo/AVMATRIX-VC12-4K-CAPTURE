@@ -240,3 +240,15 @@ Three 3840×2160 frames of the home screen per setting, Y (luma) statistics:
 The card delivers full range whatever the Switch 2 setting. Either the Switch 2 sends YCbCr, which its RGB Range setting does not affect, or the card's HDMI chip converts every input to full range. A PS5 with its RGB range set to Limited would tell the two apart. `96dd3f1` reports full-range Rec. 709 in the format.
 
 (A first Limited reading taken on the TV Output settings screen gave 0.1% / 99.9% points of 17 / 246. That screen has no full black or white, so the reading reflected the content, not the range.)
+
+### PS5: HDCP and colour range (driver `96dd3f1`, srcversion `72A67248544678E83B7D8D7`)
+
+PS5 connected at 3840×2160p60 with OBS capturing. The operator turned Settings → System → HDMI → Enable HDCP off and back on, then set the RGB range to Limited and went to the home screen.
+
+| Check | Result |
+|---|---|
+| HDCP on (setting) | The card delivered the normal home screen. Register 8 read 0 throughout, so the driver never blanked and logged no change. The Windows driver blanks on the same register, so it would not have blanked either. Whether HDCP was active on the link can't be seen: register 8 is the only HDCP status the card gives the host. |
+| RGB range Limited, home screen (`tests/yrange.py`) | Y min 1, max 254; 59.2% of pixels below 16 (the black background at Y ≈ 1), 1.6% above 235 |
+| Signal re-handshakes at each HDCP toggle | OBS logged 31 "select timed out"; each made OBS call `LOG_STATUS`, 293 status dumps this boot. Rate-limited in the next commit. Canary hits only at the register 9 limit, inside the buffers; 0 `IO_PAGE_FAULT` |
+
+**4.5 settled:** a limited-range source has black at Y = 16, but the PS5 on Limited arrives with black at Y ≈ 1. So the card converts its input to full range, presumably in the GSV2011's colour-space converter, whatever the console sends. With the Switch 2 results, the format's full-range label is right for every source tested.
