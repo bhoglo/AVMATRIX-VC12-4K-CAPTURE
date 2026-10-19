@@ -74,6 +74,7 @@ Record these on the unmodified driver, with no other app using the card, in `doc
 | 2.4 | **Frame intervals and `S_PARM`.** List input/1 to input/4 as intervals. `S_PARM` picks the closest divisor per file handle and skips frames for that consumer. `G_PARM` reports the effective rate with `V4L2_CAP_TIMEPERFRAME`. |
 | 2.5 | **Picture controls.** Brightness, contrast, saturation and hue move to a `v4l2_ctrl_handler`, range 0–255, default 128. Changes write register `91 + 2·ch` as `sat<<24 \| hue<<16 \| con<<8 \| bri` and are re-applied after a hardware re-init. |
 | 2.6 | **Small fixes.** `bus_info` becomes `PCI:<pci_name>`. Fix the 720×576 table entry, which currently says 720×480. Drop `VB2_READ` and the `read()` stub. |
+| 2.7 | **Suspend and resume.** Found during stage 2 testing: after S3 the card's registers are wiped and capture stays dead until a reboot, because the driver has no PM callbacks. Suspend records and stops the running engines; resume replays the probe-time reset and `InitVideoSys()`, then restarts them. |
 
 **Done when:**
 - `v4l2-compliance` failures drop from the baseline.
@@ -82,6 +83,7 @@ Record these on the unmodified driver, with no other app using the card, in `doc
 - `--set-parm 30` on a 59.94 fps source streams at 29.97.
 - Picture controls visibly change the image, and register 91 reads back the values.
 - An existing OBS source keeps working.
+- After `systemctl suspend` and wake, capture resumes without a reboot.
 
 ## Stage 3: `rework/single-copy`
 
