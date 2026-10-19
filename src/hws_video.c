@@ -3538,9 +3538,10 @@ static void hws_finish_frame(struct hws_video *v, enum vb2_buffer_state state,
  * moved on late, after that pair's next half-done interrupt; a buffer touched
  * by a late write completes with an error.
  */
-static bool zero_copy;
+static bool zero_copy = true;
 module_param(zero_copy, bool, 0644);
-MODULE_PARM_DESC(zero_copy, "let the card write frames into an app's buffers when the IOMMU allows it (default off)");
+MODULE_PARM_DESC(zero_copy, "let the card write frames into an app's buffers when the IOMMU allows it (default on; "
+		 "takes effect for buffers allocated afterwards)");
 
 
 static bool hws_iommu_translates(struct device *dev)
