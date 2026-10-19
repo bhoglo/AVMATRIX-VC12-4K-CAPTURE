@@ -313,6 +313,8 @@ struct hws_vfh_ctx {
     bool                streaming;
     atomic_t            inflight;    /* buffers the worker popped but has not completed */
     wait_queue_head_t   inflight_wq; /* stop_streaming waits here for inflight == 0 */
+    u32                 decimate;    /* deliver every Nth input frame (S_PARM), 1..4 */
+    u32                 next_seq;    /* first frame sequence this consumer still wants */
     struct hws_video   *video;
     struct list_head    node;        /* link into video->consumers */
 };

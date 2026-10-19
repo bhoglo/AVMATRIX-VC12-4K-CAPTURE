@@ -199,13 +199,6 @@ static const int framegrabber_support_refreshrate[]= {
 #define NUM_FRAMERATE_CONTROLS (ARRAY_SIZE(framegrabber_support_refreshrate))
 
 //-------------------------------------------
-static int  v4l2_model_get_support_framerate(int index)
-{
-	if(index <0 ||index >=NUM_FRAMERATE_CONTROLS)
-		return -1;
-
-	return (framegrabber_support_refreshrate[index]);
-}
 
 static int v4l2_get_suport_VideoFormatIndex_wh(int w, int h)
 {
@@ -482,23 +475,6 @@ static int hws_vidioc_s_std(struct file *file, void *priv,v4l2_std_id tvnorms)
 	return 0;
 }
 
-int hws_vidioc_g_parm(struct file *file,void *fh, struct v4l2_streamparm *setfps)
-{
-	struct hws_video *videodev = video_drvdata(file);
-	v4l2_model_timing_t *p_SupportmodeTiming;
-
-	if (setfps->type != V4L2_BUF_TYPE_VIDEO_CAPTURE)
-		return -EINVAL;
-	p_SupportmodeTiming = Get_input_framesizeIndex(videodev->current_out_width, videodev->curren_out_height);
-	setfps->type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-	/* the input's measured rate; the table's nominal rate until one is measured */
-	if (!hws_input_timeperframe(videodev->dev, videodev->index, &setfps->parm.capture.timeperframe)) {
-		setfps->parm.capture.timeperframe.numerator=1000;
-		setfps->parm.capture.timeperframe.denominator=(p_SupportmodeTiming ? p_SupportmodeTiming->refresh_rate : 60)*1000;
-	}
-	//printk( "%s fps =%d \n", __func__, p_SupportmodeTiming->refresh_rate);
-	return 0;
-}
 /*
  * The live input size comes first (it needs no scaling), then the table sizes
  * the CPU scaler can produce, without repeating the input size.
@@ -644,6 +620,8 @@ static int hws_open(struct file *file)
     ctx->streaming = false;
     atomic_set(&ctx->inflight, 0);
     init_waitqueue_head(&ctx->inflight_wq);
+    ctx->decimate = 1;
+    ctx->next_seq = 0;
 
     /* v4l2 file-handle */
     v4l2_fh_init(&ctx->fh, &videodev->vdev);
@@ -825,76 +803,80 @@ return(vb2_ioctl_streamoff(file,priv,i));
 
 }
 #endif
-static int hws_vidioc_enum_frameintervals(struct file *file, void *fh,
-										  struct v4l2_frmivalenum *fival)
+#define HWS_MAX_DECIMATE 4
+
+/* The input's time per frame: measured if possible, else the table's nominal rate. */
+static void hws_input_tpf(struct hws_video *videodev, struct v4l2_fract *tpf)
 {
-	//struct hws_video *videodev = video_drvdata(file);
-	int Index;
-	int FrameRate;
-	Index = fival->index;
-	//printk( "%s(CH-%d) FrameIndex =%d \n", __func__,videodev->index,Index);
-	if(Index <0 ||Index >=NUM_FRAMERATE_CONTROLS)
-	{
-		return   -EINVAL;
-	}
+	v4l2_model_timing_t *t;
 
-	FrameRate = v4l2_model_get_support_framerate(Index);
-	if(FrameRate == -1) return -EINVAL;
-	if (!hws_size_supported(video_drvdata(file), fival->width, fival->height))
+	if (hws_input_timeperframe(videodev->dev, videodev->index, tpf))
+		return;
+	t = Get_input_framesizeIndex(videodev->current_out_width, videodev->curren_out_height);
+	tpf->numerator = 1;
+	tpf->denominator = t ? t->refresh_rate : 60;
+}
+
+/*
+ * Rates are the input rate divided by 1..HWS_MAX_DECIMATE: the card always
+ * captures at the input rate, and a consumer that asks for less gets every
+ * Nth frame, which also saves the copy for the frames it skips.
+ */
+static int hws_vidioc_enum_frameintervals(struct file *file, void *fh,
+					  struct v4l2_frmivalenum *fival)
+{
+	struct hws_video *videodev = video_drvdata(file);
+	struct v4l2_fract tpf;
+
+	if (fival->index >= HWS_MAX_DECIMATE)
 		return -EINVAL;
-
-	#if 1
+	if (!framegrabber_g_support_pixelfmt_by_fourcc(fival->pixel_format))
+		return -EINVAL;
+	if (!hws_size_supported(videodev, fival->width, fival->height))
+		return -EINVAL;
+	hws_input_tpf(videodev, &tpf);
 	fival->type = V4L2_FRMIVAL_TYPE_DISCRETE;
-	fival->discrete.numerator=1 ;
-	fival->discrete.denominator=FrameRate;
-	#else
-	fival->type = V4L2_FRMIVAL_TYPE_DISCRETE;
-    if (fival->width == 720 && fival->height == 576) {
-        /* just show  25/50 */
-        if (fival->index == 0) {
-            fival->discrete.numerator = 1;
-            fival->discrete.denominator = 25;
-            return 0;
-        } else if (fival->index == 1) {
-            fival->discrete.numerator = 1;
-            fival->discrete.denominator = 50;
-            return 0;
-        }
-        return -EINVAL;
-    } else {
-        /* ohter  30/60 */
-        if (fival->index == 0) {
-            fival->discrete.numerator = 1;
-            fival->discrete.denominator = 30;
-            return 0;
-        } else if (fival->index == 1) {
-            fival->discrete.numerator = 1;
-            fival->discrete.denominator = 60;
-            return 0;
-        }
-        return -EINVAL;
-    }
-	#endif
-
-	//printk( "%s FrameIndex=%d W=%d H=%d  FrameRate=%d \n", __func__,Index,fival->width,fival->height,FrameRate);
+	fival->discrete.numerator = tpf.numerator * (fival->index + 1);
+	fival->discrete.denominator = tpf.denominator;
 	return 0;
 }
+
+int hws_vidioc_g_parm(struct file *file,void *fh, struct v4l2_streamparm *a)
+{
+	struct hws_video *videodev = video_drvdata(file);
+	struct hws_vfh_ctx *ctx = hws_ctx_from_file(file);
+	struct v4l2_fract tpf;
+
+	if (a->type != V4L2_BUF_TYPE_VIDEO_CAPTURE)
+		return -EINVAL;
+	hws_input_tpf(videodev, &tpf);
+	memset(&a->parm.capture, 0, sizeof(a->parm.capture));
+	a->parm.capture.capability = V4L2_CAP_TIMEPERFRAME;
+	a->parm.capture.timeperframe.numerator = tpf.numerator * ctx->decimate;
+	a->parm.capture.timeperframe.denominator = tpf.denominator;
+	return 0;
+}
+
 int hws_vidioc_s_parm(struct file *file, void *fh,struct v4l2_streamparm *a)
 {
 	struct hws_video *videodev = video_drvdata(file);
-	int io_frame_rate;
-	int in_frame_rate;
-	//int io_widht;
-	//int io_hight;
-	//int io_index;
-	v4l2_model_timing_t *p_SupportmodeTiming;
-	io_frame_rate = a->parm.capture.timeperframe.denominator/a->parm.capture.timeperframe.numerator;
-	//io_index = a->parm.capture.timeperframe.index;
-	//printk( "%s(CH-%d) io_index =%d \n", __func__,videodev->index,io_index);
-	p_SupportmodeTiming = Get_input_framesizeIndex(videodev->current_out_width, videodev->curren_out_height);
-	in_frame_rate = p_SupportmodeTiming ? p_SupportmodeTiming->refresh_rate : 60;
-	//printk( "%s(ch-%d)io_frame_rate =%d  in_frame_rate =%d \n", __func__,videodev->index,io_frame_rate,in_frame_rate);
-	return 0;
+	struct hws_vfh_ctx *ctx = hws_ctx_from_file(file);
+	struct v4l2_fract *want = &a->parm.capture.timeperframe;
+	struct v4l2_fract tpf;
+	u64 want_ns, in_ns;
+	u32 n;
+
+	if (a->type != V4L2_BUF_TYPE_VIDEO_CAPTURE)
+		return -EINVAL;
+	/* 0/x or x/0 means "no preference": keep the current rate (this used to divide by zero) */
+	if (want->numerator && want->denominator) {
+		hws_input_tpf(videodev, &tpf);
+		want_ns = div_u64((u64)want->numerator * NSEC_PER_SEC, want->denominator);
+		in_ns = div_u64((u64)tpf.numerator * NSEC_PER_SEC, tpf.denominator);
+		n = in_ns ? (u32)div64_u64(want_ns + in_ns / 2, in_ns) : 1;
+		ctx->decimate = clamp_t(u32, n, 1, HWS_MAX_DECIMATE);
+	}
+	return hws_vidioc_g_parm(file, fh, a);
 }
 
 /*
@@ -1337,6 +1319,7 @@ static int hws_start_streaming_multi(struct vb2_queue *q, unsigned int count)
     struct hws_vfh_ctx *ctx = q->drv_priv;
     struct hws_video *videodev = ctx->video;
 
+    ctx->next_seq = 0;
     ctx->streaming = true;
 
     /* Start hardware engine only once, on first streamer. engine_lock keeps a
@@ -3085,7 +3068,7 @@ static int  MemCopyFrame(int nDecoder,BYTE * dest,int nWidth,int nHeight,int int
  * as in flight. One per consumer, so every app gets each frame once; this used
  * to drain every queued buffer and fill them all with the same frame.
  */
-static void hws_pop_one_per_consumer(struct hws_video *videodev, struct list_head *out)
+static void hws_pop_one_per_consumer(struct hws_video *videodev, struct list_head *out, u32 seq)
 {
 	struct hws_vfh_ctx *ctx;
 	unsigned long flags, qflags;
@@ -3094,10 +3077,14 @@ static void hws_pop_one_per_consumer(struct hws_video *videodev, struct list_hea
 	list_for_each_entry(ctx, &videodev->consumers, node) {
 		if (!ctx->streaming)
 			continue;
+		/* a lower requested rate (S_PARM) skips frames; a counter reset restarts it */
+		if (seq < ctx->next_seq && ctx->next_seq - seq <= ctx->decimate)
+			continue;
 		spin_lock_irqsave(&ctx->qlock, qflags);
 		if (!list_empty(&ctx->buf_queue)) {
 			list_move_tail(ctx->buf_queue.next, out);
 			atomic_inc(&ctx->inflight);
+			ctx->next_seq = seq + ctx->decimate;
 		}
 		spin_unlock_irqrestore(&ctx->qlock, qflags);
 	}
@@ -3189,7 +3176,7 @@ void video_data_process(struct work_struct *p_work)
 	spin_unlock_irqrestore(&pdx->videoslock[nCh], flags);
 	out_size = out_w * out_h * 2;
 
-	hws_pop_one_per_consumer(videodev, &todo);
+	hws_pop_one_per_consumer(videodev, &todo, frame_seq);
 
 	list_for_each_entry_safe(buf, tmp, &todo, queue) {
 		list_del(&buf->queue);
