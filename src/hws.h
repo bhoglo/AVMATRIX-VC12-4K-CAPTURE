@@ -10,6 +10,8 @@
 
 #include <media/v4l2-ioctl.h>
 #include <media/v4l2-event.h>
+#include <media/v4l2-dv-timings.h>
+#include <linux/v4l2-dv-timings.h>	/* V4L2_INIT_BT_TIMINGS */
 #include <media/v4l2-common.h>
 #include <media/v4l2-device.h>
 #include <media/v4l2-ctrls.h>
@@ -348,6 +350,10 @@ struct hws_video{
 	struct v4l2_ctrl *ctrl_saturation;
 	struct v4l2_ctrl *ctrl_hue;
 	u32 m_PictureReg;	/* last value written to the picture register, 0 = never */
+	struct v4l2_dv_timings dv_timings;	/* G/S_DV_TIMINGS */
+	/* last input state seen by the status thread, for source-change events */
+	bool src_signal;
+	int src_w, src_h, src_il;
 	//------------------------
 	int current_out_width;
 	int curren_out_height;

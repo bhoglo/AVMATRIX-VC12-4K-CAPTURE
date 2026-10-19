@@ -31,6 +31,7 @@ static bool hws_input_timeperframe(struct hws_pcie_dev *pdx, int ch, struct v4l2
 static void WRITE_REGISTER_ULONG(struct hws_pcie_dev *pdx,u32 RegisterOffset,u32 Value);
 static u32 READ_REGISTER_ULONG(struct hws_pcie_dev *pdx,u32 RegisterOffset);
 static bool hws_any_queue_busy(struct hws_video *videodev);
+static void hws_check_source_change(struct hws_video *videodev);
 
 //------------------------
 
@@ -459,21 +460,6 @@ static int vidioc_s_fmt_vid_cap(struct file *file, void *priv,struct v4l2_format
 	spin_unlock_irqrestore(&pdx->videoslock[videodev->index], flags);
 	return 0;
 }
-static int hws_vidioc_g_std(struct file *file, void *priv, v4l2_std_id *tvnorms)
-{
-	struct hws_video *videodev = video_drvdata(file);
-	//printk( "%s()\n", __func__);
-	*tvnorms = videodev->std;
-	return 0;
-}
-
-static int hws_vidioc_s_std(struct file *file, void *priv,v4l2_std_id tvnorms)
-{
-	struct hws_video *videodev = video_drvdata(file);
-	//printk( "%s()\n", __func__);
-	videodev->std = tvnorms;
-	return 0;
-}
 
 /*
  * The live input size comes first (it needs no scaling), then the table sizes
@@ -519,20 +505,25 @@ static int hws_vidioc_enum_framesizes(struct file *file, void *fh, struct v4l2_f
 
 static int hws_vidioc_enum_input(struct file *file, void *priv,struct v4l2_input *i)
 {
-	//struct hws_video *videodev = video_drvdata(file);
-	int Index;
-	Index = i->index;
-	//printk( "%s(%d)-%d Index =%d \n", __func__,videodev->index,i->index,Index);
-	if(Index >0)
-	{
-		return   -EINVAL;
-	}
-	i->type = V4L2_INPUT_TYPE_CAMERA;
-	strcpy(i->name, KBUILD_MODNAME);
-	i->std = V4L2_STD_NTSC_M;
-	i->capabilities = 0;
-	i->status=0;
+	struct hws_video *videodev = video_drvdata(file);
+	struct hws_pcie_dev *pdx = videodev->dev;
+	int w, h, il;
+	u32 st;
 
+	if (i->index > 0)
+		return -EINVAL;
+	i->type = V4L2_INPUT_TYPE_CAMERA;
+	strscpy(i->name, "HDMI", sizeof(i->name));
+	i->std = 0;
+	i->capabilities = V4L2_IN_CAP_DV_TIMINGS;
+	i->status = 0;
+	if (!hws_read_input(pdx, videodev->index, &w, &h, &il)) {
+		st = pdx->m_PciDeviceLost ? 0 :
+		     READ_REGISTER_ULONG(pdx, CVBS_IN_BASE + 5 * PCIE_BARADDROFSIZE);
+		/* active but unusable (too large, odd width) reads as no sync */
+		i->status = (st != 0xFFFFFFFF && ((st >> videodev->index) & 1)) ?
+			    V4L2_IN_ST_NO_SYNC : V4L2_IN_ST_NO_SIGNAL;
+	}
 	return 0;
 }
 
@@ -585,11 +576,6 @@ printk( "%s(%d)- %dx%d \n", __func__,i,videodev->current_out_width,videodev->cur
 #endif
 //printk( "%s(%d)\n", __func__,i);
 return i ? -EINVAL : 0;
-}
-static int vidioc_log_status(struct file *file, void *priv)
-{
-	//printk( "%s()\n", __func__);
-	return 0;
 }
 
 static inline struct hws_vfh_ctx *hws_ctx_from_file(struct file *file)
@@ -879,6 +865,190 @@ int hws_vidioc_s_parm(struct file *file, void *fh,struct v4l2_streamparm *a)
 	return hws_vidioc_g_parm(file, fh, a);
 }
 
+/* What the card can lock to: HDMI 2.0 up to 4096x2160 (3840 if DMA buffers had to stay at 4 MiB). */
+static const struct v4l2_dv_timings_cap hws_timings_cap = {
+	.type = V4L2_DV_BT_656_1120,
+	V4L2_INIT_BT_TIMINGS(640, 4096, 480, 2160, 13500000, 600000000,
+		V4L2_DV_BT_STD_CEA861 | V4L2_DV_BT_STD_DMT | V4L2_DV_BT_STD_CVT | V4L2_DV_BT_STD_GTF,
+		V4L2_DV_BT_CAP_PROGRESSIVE | V4L2_DV_BT_CAP_INTERLACED |
+		V4L2_DV_BT_CAP_REDUCED_BLANKING | V4L2_DV_BT_CAP_CUSTOM)
+};
+
+static u64 hws_tpf_ns(const struct v4l2_fract *f)
+{
+	return f->denominator ? div_u64((u64)f->numerator * NSEC_PER_SEC, f->denominator) : 0;
+}
+
+/*
+ * Describe the current input as DV timings. The card reports only the active
+ * size and interlacing, so take the standard preset with that size and the
+ * closest frame rate; for a size no preset has, synthesize timings without
+ * blanking whose pixel clock still gives the measured rate.
+ */
+static int hws_query_timings(struct hws_video *videodev, struct v4l2_dv_timings *t)
+{
+	struct hws_pcie_dev *pdx = videodev->dev;
+	struct v4l2_fract tpf, ptpf;
+	u64 want_ns, best_err = U64_MAX, err;
+	int w, h, il, i, best = -1;
+	u32 st;
+
+	if (!hws_read_input(pdx, videodev->index, &w, &h, &il)) {
+		st = pdx->m_PciDeviceLost ? 0 :
+		     READ_REGISTER_ULONG(pdx, CVBS_IN_BASE + 5 * PCIE_BARADDROFSIZE);
+		return (st != 0xFFFFFFFF && ((st >> videodev->index) & 1)) ? -ERANGE : -ENOLINK;
+	}
+	if (!hws_input_timeperframe(pdx, videodev->index, &tpf)) {
+		tpf.numerator = 1;	/* not measured yet (rate is counted while capturing) */
+		tpf.denominator = 60;
+	}
+	want_ns = hws_tpf_ns(&tpf);
+
+	for (i = 0; v4l2_dv_timings_presets[i].bt.width; i++) {
+		const struct v4l2_bt_timings *bt = &v4l2_dv_timings_presets[i].bt;
+		if (bt->width != w || bt->height != h || !!bt->interlaced != !!il)
+			continue;
+		ptpf = v4l2_calc_timeperframe(&v4l2_dv_timings_presets[i]);
+		err = hws_tpf_ns(&ptpf);
+		err = err > want_ns ? err - want_ns : want_ns - err;
+		if (err < best_err) {
+			best_err = err;
+			best = i;
+		}
+	}
+	if (best >= 0 && best_err * 100 <= want_ns) {	/* within 1% */
+		*t = v4l2_dv_timings_presets[best];
+		return 0;
+	}
+	memset(t, 0, sizeof(*t));
+	t->type = V4L2_DV_BT_656_1120;
+	t->bt.width = w;
+	t->bt.height = h;
+	t->bt.interlaced = il ? V4L2_DV_INTERLACED : V4L2_DV_PROGRESSIVE;
+	t->bt.pixelclock = div_u64((u64)w * h * tpf.denominator, tpf.numerator);
+	return 0;
+}
+
+static int hws_query_dv_timings(struct file *file, void *fh, struct v4l2_dv_timings *t)
+{
+	return hws_query_timings(video_drvdata(file), t);
+}
+
+static int hws_g_dv_timings(struct file *file, void *fh, struct v4l2_dv_timings *t)
+{
+	struct hws_video *videodev = video_drvdata(file);
+
+	if (!videodev->dv_timings.bt.width && hws_query_timings(videodev, &videodev->dv_timings))
+		return -ENODATA;
+	*t = videodev->dv_timings;
+	return 0;
+}
+
+/*
+ * The card follows its input, so these timings choose the output format: the
+ * usual sequence is QUERY_DV_TIMINGS, S_DV_TIMINGS, G_FMT.
+ */
+static int hws_s_dv_timings(struct file *file, void *fh, struct v4l2_dv_timings *t)
+{
+	struct hws_video *videodev = video_drvdata(file);
+	struct hws_pcie_dev *pdx = videodev->dev;
+	unsigned long flags;
+
+	if (!v4l2_valid_dv_timings(t, &hws_timings_cap, NULL, NULL))
+		return -EINVAL;
+	if (v4l2_match_dv_timings(t, &videodev->dv_timings, 0, false))
+		return 0;
+	if (!hws_size_supported(videodev, t->bt.width, t->bt.height))
+		return -EINVAL;
+	if (hws_any_queue_busy(videodev))
+		return -EBUSY;
+	videodev->dv_timings = *t;
+	spin_lock_irqsave(&pdx->videoslock[videodev->index], flags);
+	videodev->current_out_width = t->bt.width;
+	videodev->curren_out_height = t->bt.height;
+	spin_unlock_irqrestore(&pdx->videoslock[videodev->index], flags);
+	return 0;
+}
+
+static int hws_enum_dv_timings(struct file *file, void *fh, struct v4l2_enum_dv_timings *t)
+{
+	return v4l2_enum_dv_timings_cap(t, &hws_timings_cap, NULL, NULL);
+}
+
+static int hws_dv_timings_cap(struct file *file, void *fh, struct v4l2_dv_timings_cap *cap)
+{
+	*cap = hws_timings_cap;
+	return 0;
+}
+
+static int hws_subscribe_event(struct v4l2_fh *fh, const struct v4l2_event_subscription *sub)
+{
+	switch (sub->type) {
+	case V4L2_EVENT_SOURCE_CHANGE:
+		return v4l2_src_change_event_subscribe(fh, sub);
+	case V4L2_EVENT_CTRL:
+		return v4l2_ctrl_subscribe_event(fh, sub);
+	}
+	return -EINVAL;
+}
+
+/*
+ * Called by the status thread for every channel with an open file handle:
+ * signal gained or lost, or the size or interlacing changed, raises
+ * V4L2_EVENT_SOURCE_CHANGE so apps can renegotiate.
+ */
+static void hws_check_source_change(struct hws_video *videodev)
+{
+	static const struct v4l2_event ev = {
+		.type = V4L2_EVENT_SOURCE_CHANGE,
+		.u.src_change.changes = V4L2_EVENT_SRC_CH_RESOLUTION,
+	};
+	int w = 0, h = 0, il = 0;
+	bool sig = hws_read_input(videodev->dev, videodev->index, &w, &h, &il);
+
+	if (sig == videodev->src_signal && w == videodev->src_w &&
+	    h == videodev->src_h && il == videodev->src_il)
+		return;
+	videodev->src_signal = sig;
+	videodev->src_w = w;
+	videodev->src_h = h;
+	videodev->src_il = il;
+	videodev->dv_timings.bt.width = 0;	/* G_DV_TIMINGS re-queries */
+	v4l2_event_queue(&videodev->vdev, &ev);
+}
+
+static int hws_log_status(struct file *file, void *fh)
+{
+	struct hws_video *videodev = video_drvdata(file);
+	struct hws_pcie_dev *pdx = videodev->dev;
+	struct v4l2_dv_timings t;
+	struct v4l2_fract tpf;
+	struct hws_vfh_ctx *ctx;
+	unsigned long flags;
+	int open = 0, streaming = 0;
+
+	if (hws_query_timings(videodev, &t) == 0)
+		v4l2_print_dv_timings(videodev->v4l2_dev.name, "input: ", &t, true);
+	else
+		v4l2_info(&videodev->v4l2_dev, "input: no usable signal\n");
+	if (hws_input_timeperframe(pdx, videodev->index, &tpf))
+		v4l2_info(&videodev->v4l2_dev, "measured frame interval: %u/%u s\n",
+			  tpf.numerator, tpf.denominator);
+	v4l2_info(&videodev->v4l2_dev, "output: %dx%d, frames: %u, dropped: %u, DMA buffers: %d KiB\n",
+		  videodev->current_out_width, videodev->curren_out_height,
+		  pdx->m_FrameSeq[videodev->index], pdx->m_FramesDropped[videodev->index],
+		  pdx->m_MaxHWVideoBufferSize / 1024);
+	spin_lock_irqsave(&videodev->consumers_lock, flags);
+	list_for_each_entry(ctx, &videodev->consumers, node) {
+		open++;
+		streaming += ctx->streaming;
+	}
+	spin_unlock_irqrestore(&videodev->consumers_lock, flags);
+	v4l2_info(&videodev->v4l2_dev, "file handles: %d open, %d streaming\n", open, streaming);
+	v4l2_ctrl_handler_log_status(&videodev->ctrl_hdl, videodev->v4l2_dev.name);
+	return 0;
+}
+
 /*
  * Multi-consumer locking. Each open() owns a vb2 queue guarded by its own
  * ctx->qmutex, which is also that queue's q->lock, so vb2 releases it while a
@@ -903,6 +1073,10 @@ static bool hws_is_buffer_ioctl(unsigned int cmd)
 	case VIDIOC_DQBUF:
 	case VIDIOC_STREAMON:
 	case VIDIOC_STREAMOFF:
+	case VIDIOC_DQEVENT:		/* per file handle, and may block like DQBUF */
+#ifdef VIDIOC_DQEVENT_TIME32
+	case VIDIOC_DQEVENT_TIME32:
+#endif
 #ifdef VIDIOC_DQBUF_TIME32
 	case VIDIOC_QUERYBUF_TIME32:
 	case VIDIOC_QBUF_TIME32:
@@ -1059,8 +1233,6 @@ static const struct v4l2_ioctl_ops hws_ioctl_fops = {
 	.vidioc_dqbuf         = hws_dqbuf,
 	.vidioc_streamon      = hws_streamon,
 	.vidioc_streamoff     = hws_streamoff,
-	.vidioc_g_std = hws_vidioc_g_std,
-	.vidioc_s_std = hws_vidioc_s_std,
 	.vidioc_enum_framesizes   	= hws_vidioc_enum_framesizes,
 	.vidioc_enum_frameintervals = hws_vidioc_enum_frameintervals,
 	.vidioc_g_parm 	   = hws_vidioc_g_parm,
@@ -1069,9 +1241,14 @@ static const struct v4l2_ioctl_ops hws_ioctl_fops = {
 	.vidioc_enum_input = hws_vidioc_enum_input,
 	.vidioc_g_input = hws_vidioc_g_input,
 	.vidioc_s_input = hws_vidioc_s_input,
-	//.vidioc_log_status = vidioc_log_status,
-	//.vidioc_subscribe_event = v4l2_ctrl_subscribe_event,
-	//.vidioc_unsubscribe_event = v4l2_event_unsubscribe,
+	.vidioc_query_dv_timings = hws_query_dv_timings,
+	.vidioc_g_dv_timings = hws_g_dv_timings,
+	.vidioc_s_dv_timings = hws_s_dv_timings,
+	.vidioc_enum_dv_timings = hws_enum_dv_timings,
+	.vidioc_dv_timings_cap = hws_dv_timings_cap,
+	.vidioc_log_status = hws_log_status,
+	.vidioc_subscribe_event = hws_subscribe_event,
+	.vidioc_unsubscribe_event = v4l2_event_unsubscribe,
 
 };
 
@@ -3335,6 +3512,9 @@ int hws_video_register(struct hws_pcie_dev *dev)
 		}
 
 		INIT_WORK(&dev->video[i].videowork,video_data_process);
+		/* seed the status thread's view so the first poll raises no event */
+		dev->video[i].src_signal = hws_read_input(dev, i, &dev->video[i].src_w,
+							  &dev->video[i].src_h, &dev->video[i].src_il);
 		err = hws_ctrls_init(&dev->video[i]);
 		if(err){
 			printk(KERN_ERR " control handler init failed !!!!! \n");
@@ -5343,12 +5523,18 @@ int MainKsThreadHandle(void *arg)
 		{
 			CheckVideFmt(pdx);
 		}
+		for(i=0; i<pdx->m_nCurreMaxVideoChl; i++)
+		{
+			if(pdx->video[i].fileindex > 0)
+				hws_check_source_change(&pdx->video[i]);
+		}
 		/*
 		 * TASK_IDLE: ssleep() slept uninterruptibly, which counts toward
 		 * the load average and kept it 1.0 higher for as long as the
 		 * module was loaded. kthread_stop() still wakes this early.
+		 * Every 250 ms so resolution changes are noticed quickly.
 		 */
-		schedule_timeout_idle(HZ);
+		schedule_timeout_idle(HZ / 4);
 	}
 	//printk("MainKsThreadHandle Exit");
 	return 0;
