@@ -1070,6 +1070,15 @@ static int hws_log_status(struct file *file, void *fh)
 	unsigned long flags;
 	int open = 0, streaming = 0;
 
+	/*
+	 * OBS calls LOG_STATUS on every read timeout (5 frame periods), which
+	 * during a signal change is about 12 times a second, each a dozen
+	 * kernel log lines. Print at most once every 2 s.
+	 */
+	static DEFINE_RATELIMIT_STATE(rs, 2 * HZ, 1);
+
+	if (!__ratelimit(&rs))
+		return 0;
 	if (hws_query_timings(videodev, &t) == 0)
 		v4l2_print_dv_timings(videodev->v4l2_dev.name, "input: ", &t, true);
 	else
