@@ -5116,6 +5116,29 @@ static struct hws_pcie_dev *alloc_dev_instance(struct pci_dev *pdev)
 }
 
 
+/*
+ * Register 9 caps an over-long quarter run (HWS_REG_DMA_MAX_SIZE) at the
+ * largest programmed quarter, so a run with stale lengths ends at most a
+ * quarter plus the 2 KiB block past its start: inside the 4.5 MiB DMA
+ * buffers, and within the slack of a buffer the card writes directly
+ * (stage 4.4). Never above the old limit, which kept clear of the audio
+ * ring. Called wherever the quarter lengths are programmed.
+ */
+static void hws_set_dma_max(struct hws_pcie_dev *pdx)
+{
+	u32 max = 0, cap;
+	int i;
+
+	if (!pdx->m_DeviceHW_Version || !pdx->m_MaxHWVideoBufferSize)
+		return;
+	for (i = 0; i < 4; i++)
+		max = max_t(u32, max, pdx->m_format[i].HLAF_SIZE);
+	cap = pdx->m_MaxHWVideoBufferSize - MAX_AUDIO_CAP_SIZE - 2048;
+	if (!max || max > cap)
+		max = cap;
+	WRITE_REGISTER_ULONG(pdx, HWS_REG_DMA_MAX_SIZE, max / 16);
+}
+
 static void SetDMAAddress(struct hws_pcie_dev *pdx)
 {
 	//-------------------------------------
@@ -5241,6 +5264,7 @@ static int ChangeVideoSize(struct hws_pcie_dev *pdx,int ch,int w,int h,int inter
 	WRITE_REGISTER_ULONG(pdx,(DWORD)(CBVS_IN_BUF_BASE2 + (1*PCIE_BARADDROFSIZE)), halfframeLength[1]); //Buffer 1 address
 	WRITE_REGISTER_ULONG(pdx,(DWORD)(CBVS_IN_BUF_BASE2 + (2*PCIE_BARADDROFSIZE)), halfframeLength[2]); //Buffer 1 address
 	WRITE_REGISTER_ULONG(pdx,(DWORD)(CBVS_IN_BUF_BASE2 + (3*PCIE_BARADDROFSIZE)), halfframeLength[3]); //Buffer 1 address
+	hws_set_dma_max(pdx);
 	hws_fill_canary(pdx);
 	return 0;
 }
@@ -5571,15 +5595,8 @@ static void InitVideoSys(struct hws_pcie_dev *pdx,int set)
 	if(pdx->m_bStartRun&&(set==0)) return;
 	WRITE_REGISTER_ULONG(pdx,( CVBS_IN_BASE + (0 * PCIE_BARADDROFSIZE)), 0X00);
 	SetDMAAddress(pdx);
-	/*
-	 * Keep an over-long quarter, and the 2 KiB block the card writes where
-	 * it stops, inside the buffer and clear of the audio ring at its end.
-	 * Still larger than the biggest quarter (4096x2160). Re-applied after
-	 * suspend, which resets it.
-	 */
-	if (pdx->m_DeviceHW_Version && pdx->m_MaxHWVideoBufferSize)
-		WRITE_REGISTER_ULONG(pdx, HWS_REG_DMA_MAX_SIZE,
-				     (pdx->m_MaxHWVideoBufferSize - MAX_AUDIO_CAP_SIZE - 2048) / 16);
+	/* re-applied here after suspend, which resets it */
+	hws_set_dma_max(pdx);
 	if(set ==0)
 	{
 		for(i=0; i<pdx->m_nMaxChl;i++)
