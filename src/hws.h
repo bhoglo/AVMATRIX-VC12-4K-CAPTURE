@@ -459,6 +459,10 @@ struct hws_pcie_dev {
 	u64       m_FrameEndNs[MAX_VID_CHANNELS];	/* set by irqhandler at the frame-end half */
 	u32       m_FrameSeq[MAX_VID_CHANNELS];	/* next frame number, under videoslock */
 	u32       m_FramesDropped[MAX_VID_CHANNELS];	/* READY frames overwritten or skipped */
+	/* input frame rate, measured from frame-end interrupts over ~1 s windows */
+	u64       m_RateWinStartNs[MAX_VID_CHANNELS];
+	u32       m_RateWinFrames[MAX_VID_CHANNELS];
+	u64       m_FrameIntervalNs[MAX_VID_CHANNELS];	/* last measured, 0 = unknown */
 	uint8_t	  m_dwAudioField[MAX_VID_CHANNELS];
 	uint8_t   m_nAudioBusy[MAX_VID_CHANNELS];
 	uint8_t   m_nAudioBufferIndex[MAX_VID_CHANNELS];

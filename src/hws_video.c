@@ -27,6 +27,7 @@ static int StartAudioCapture(struct hws_pcie_dev *pdx,int index);
 static void StopAudioCapture(struct hws_pcie_dev *pdx,int index);
 static void StopVideoCapture(struct hws_pcie_dev *pdx,int index);
 static void InitVideoSys(struct hws_pcie_dev *pdx,int set);
+static bool hws_input_timeperframe(struct hws_pcie_dev *pdx, int ch, struct v4l2_fract *tpf);
 
 //------------------------
 
@@ -500,8 +501,11 @@ int hws_vidioc_g_parm(struct file *file,void *fh, struct v4l2_streamparm *setfps
 	p_SupportmodeTiming = v4l2_model_get_support_videoformat(videodev->current_out_size_index);
 	if(p_SupportmodeTiming ==NULL) return -EINVAL;
 	setfps->type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-	setfps->parm.capture.timeperframe.numerator=1000;
-	setfps->parm.capture.timeperframe.denominator=p_SupportmodeTiming->refresh_rate*1000;
+	/* the input's measured rate; the table's nominal rate until one is measured */
+	if (!hws_input_timeperframe(videodev->dev, videodev->index, &setfps->parm.capture.timeperframe)) {
+		setfps->parm.capture.timeperframe.numerator=1000;
+		setfps->parm.capture.timeperframe.denominator=p_SupportmodeTiming->refresh_rate*1000;
+	}
 	//printk( "%s fps =%d \n", __func__, p_SupportmodeTiming->refresh_rate);
 	return 0;
 }
@@ -5287,6 +5291,69 @@ pdx->m_bChangeVideoSize[i] = 0;
 /* Interrupt handler. Read/modify/write the command register to disable
  * the interrupt. */
 //static irqreturn_t irqhandler(int irq, struct uio_info *info)
+/*
+ * Called from the interrupt handler when a frame completes. Besides the frame
+ * timestamp, measures the input frame rate: frames are counted over windows of
+ * about a second, which resolves 60.00 from 59.94 fps (0.1% apart) despite
+ * interrupt jitter. A gap longer than 200 ms (signal loss, capture restart)
+ * starts a new window.
+ */
+static void hws_frame_end(struct hws_pcie_dev *pdx, int ch, u64 now)
+{
+	u64 prev = pdx->m_FrameEndNs[ch];
+	u64 elapsed;
+
+	pdx->m_FrameEndNs[ch] = now;
+	if (!prev || now - prev > 200 * NSEC_PER_MSEC || !pdx->m_RateWinStartNs[ch]) {
+		pdx->m_RateWinStartNs[ch] = now;
+		pdx->m_RateWinFrames[ch] = 0;
+		return;
+	}
+	pdx->m_RateWinFrames[ch]++;
+	elapsed = now - pdx->m_RateWinStartNs[ch];
+	if (elapsed >= NSEC_PER_SEC) {
+		WRITE_ONCE(pdx->m_FrameIntervalNs[ch], div_u64(elapsed, pdx->m_RateWinFrames[ch]));
+		pdx->m_RateWinStartNs[ch] = now;
+		pdx->m_RateWinFrames[ch] = 0;
+	}
+}
+
+/*
+ * The measured input frame interval as a time-per-frame fraction, snapped to
+ * the closest standard rate when within 0.5%. Returns false if no rate has
+ * been measured yet; frames are only counted while capture runs.
+ */
+static bool hws_input_timeperframe(struct hws_pcie_dev *pdx, int ch, struct v4l2_fract *tpf)
+{
+	static const struct v4l2_fract standard[] = {
+		{ 1001, 24000 }, { 1, 24 }, { 1, 25 }, { 1001, 30000 }, { 1, 30 },
+		{ 1, 50 }, { 1001, 60000 }, { 1, 60 }, { 1, 100 }, { 1001, 120000 },
+		{ 1, 120 }, { 1, 144 }, { 1, 240 },
+	};
+	u64 meas = READ_ONCE(pdx->m_FrameIntervalNs[ch]);
+	u64 best_err = U64_MAX;
+	int i, best = -1;
+
+	if (!meas)
+		return false;
+	for (i = 0; i < ARRAY_SIZE(standard); i++) {
+		u64 std = div_u64((u64)standard[i].numerator * NSEC_PER_SEC, standard[i].denominator);
+		u64 err = meas > std ? meas - std : std - meas;
+		if (err < best_err) {
+			best_err = err;
+			best = i;
+		}
+	}
+	if (best >= 0 && best_err * 200 <= div_u64((u64)standard[best].numerator * NSEC_PER_SEC,
+						    standard[best].denominator)) {
+		*tpf = standard[best];
+	} else {
+		tpf->numerator = (u32)div_u64(meas, 1000);	/* microseconds */
+		tpf->denominator = 1000000;
+	}
+	return true;
+}
+
 static irqreturn_t irqhandler(int irq, void  *info)
 {
 	struct hws_pcie_dev *pdx = (struct hws_pcie_dev *)(info);
@@ -5319,7 +5386,7 @@ static irqreturn_t irqhandler(int irq, void  *info)
 						if(pdx->video_data[0] != tmp)
 						{
 							if(tmp == 0)	/* second half done: the frame is complete */
-								pdx->m_FrameEndNs[0] = ktime_get_ns();
+								hws_frame_end(pdx, 0, ktime_get_ns());
 							pdx->video_data[0]= tmp;
 							pdx->m_nVideoBufferIndex[0]  = tmp;
 							tasklet_schedule(&pdx->dpc_video_tasklet[0]);  // tasklet_hi_schedule
