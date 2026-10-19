@@ -883,10 +883,15 @@ static const struct v4l2_dv_timings_cap hws_timings_cap = {
 		V4L2_DV_BT_CAP_REDUCED_BLANKING | V4L2_DV_BT_CAP_CUSTOM)
 };
 
-/* v4l2_*_dv_timings_cap filter: only timings whose size the driver can deliver */
+/*
+ * v4l2_*_dv_timings_cap filter: progressive timings whose size the driver can
+ * deliver. Interlaced input is delivered line-doubled as progressive frames, so
+ * listing interlaced timings would promise a field format the driver never
+ * produces; the live input's own timings are accepted separately.
+ */
 static bool hws_timings_supported(const struct v4l2_dv_timings *t, void *handle)
 {
-	return hws_size_supported(handle, t->bt.width, t->bt.height);
+	return !t->bt.interlaced && hws_size_supported(handle, t->bt.width, t->bt.height);
 }
 
 static u64 hws_tpf_ns(const struct v4l2_fract *f)
@@ -967,9 +972,12 @@ static int hws_s_dv_timings(struct file *file, void *fh, struct v4l2_dv_timings 
 {
 	struct hws_video *videodev = video_drvdata(file);
 	struct hws_pcie_dev *pdx = videodev->dev;
+	struct v4l2_dv_timings live;
 	unsigned long flags;
 
-	if (!v4l2_valid_dv_timings(t, &hws_timings_cap, hws_timings_supported, videodev))
+	/* the input's own timings always work, interlaced ones included (QUERY then S) */
+	if (!(hws_query_timings(videodev, &live) == 0 && v4l2_match_dv_timings(t, &live, 0, false)) &&
+	    !v4l2_valid_dv_timings(t, &hws_timings_cap, hws_timings_supported, videodev))
 		return -EINVAL;
 	if (v4l2_match_dv_timings(t, &videodev->dv_timings, 0, false))
 		return 0;
