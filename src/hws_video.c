@@ -658,13 +658,13 @@ static int hws_open(struct file *file)
     q->ops = &hwspcie_video_multi_qops;
     q->mem_ops = &vb2_vmalloc_memops;
     q->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC;
-    #if (LINUX_VERSION_CODE < KERNEL_VERSION(7,0,0))
-    q->lock = NULL; /* pre-7.0: serialized via wait_prepare/wait_finish ops */
-    #else
-    /* 7.0 removed wait_prepare/wait_finish; vb2 now requires q->lock. The queue
-     * is per-open (per ctx), so a per-ctx mutex serializes only this fh. */
+    /*
+     * Per-open lock for this queue only. vb2 releases it while a blocking
+     * DQBUF waits (via wait_prepare/wait_finish before 7.0, by itself since),
+     * which the pre-7.0 ops also need: they unlock q->lock and must not see
+     * NULL.
+     */
     q->lock = &ctx->qmutex;
-    #endif
     q->dev = &pdx->pdev->dev;
 
     ret = vb2_queue_init(q);
@@ -715,7 +715,9 @@ static int hws_release(struct file *file)
     spin_unlock_irqrestore(&videodev->consumers_lock, flags);
 
     /* release vb2 queue resources */
+    mutex_lock(&ctx->qmutex);
     vb2_queue_release(&ctx->vbq);
+    mutex_unlock(&ctx->qmutex);
 
     /* v4l2 fh cleanup */
 	#if (LINUX_VERSION_CODE < KERNEL_VERSION(6,18,0))
@@ -1335,74 +1337,158 @@ int hws_vidioc_s_parm(struct file *file, void *fh,struct v4l2_streamparm *a)
 	return 0;
 }
 
-/* --- B1 multi-consumer: per-file vb2_queue switching wrappers --- */
+/*
+ * Multi-consumer locking. Each open() owns a vb2 queue guarded by its own
+ * ctx->qmutex, which is also that queue's q->lock, so vb2 releases it while a
+ * blocking DQBUF waits. Buffer ioctls, poll and mmap touch only the caller's
+ * queue. Every other ioctl changes or reads state shared by all consumers and
+ * runs under videodev->ioctl_lock.
+ *
+ * This used to hold ioctl_lock across every ioctl while swapping vdev->queue to
+ * the caller's queue. A blocking DQBUF then kept the device lock while it
+ * waited, so every other ioctl on the device, including the one that would
+ * have woken it, blocked forever (v4l2-compliance hangs in its blocking-wait
+ * test).
+ */
+static bool hws_is_buffer_ioctl(unsigned int cmd)
+{
+	switch (cmd) {
+	case VIDIOC_REQBUFS:
+	case VIDIOC_CREATE_BUFS:
+	case VIDIOC_QUERYBUF:
+	case VIDIOC_PREPARE_BUF:
+	case VIDIOC_QBUF:
+	case VIDIOC_DQBUF:
+	case VIDIOC_STREAMON:
+	case VIDIOC_STREAMOFF:
+#ifdef VIDIOC_DQBUF_TIME32
+	case VIDIOC_QUERYBUF_TIME32:
+	case VIDIOC_QBUF_TIME32:
+	case VIDIOC_DQBUF_TIME32:
+	case VIDIOC_PREPARE_BUF_TIME32:
+#endif
+		return true;
+	}
+	return false;
+}
+
 static long hws_unlocked_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
-    struct v4l2_fh *fh = file->private_data;
-    struct hws_vfh_ctx *ctx;
-    struct hws_video *videodev;
-    struct vb2_queue *oldq;
-    long ret;
+	struct hws_vfh_ctx *ctx;
+	long ret;
 
-    if (!fh)
-        return -EINVAL;
-    ctx = container_of(fh, struct hws_vfh_ctx, fh);
-    videodev = ctx->video;
+	if (!file->private_data)
+		return -EINVAL;
+	if (hws_is_buffer_ioctl(cmd))
+		return video_ioctl2(file, cmd, arg);	/* takes ctx->qmutex itself */
 
-    mutex_lock(&videodev->ioctl_lock);
-    oldq = videodev->vdev.queue;
-    videodev->vdev.queue = &ctx->vbq;
-    ret = video_ioctl2(file, cmd, arg);
-    videodev->vdev.queue = oldq;
-    mutex_unlock(&videodev->ioctl_lock);
-
-    return ret;
+	ctx = hws_ctx_from_file(file);
+	mutex_lock(&ctx->video->ioctl_lock);
+	ret = video_ioctl2(file, cmd, arg);
+	mutex_unlock(&ctx->video->ioctl_lock);
+	return ret;
 }
 
 static __poll_t hws_poll(struct file *file, struct poll_table_struct *wait)
 {
-    struct v4l2_fh *fh = file->private_data;
-    struct hws_vfh_ctx *ctx;
-    struct hws_video *videodev;
-    struct vb2_queue *oldq;
-    __poll_t ret;
+	struct hws_vfh_ctx *ctx;
+	__poll_t ret;
 
-    if (!fh)
-        return EPOLLERR;
-    ctx = container_of(fh, struct hws_vfh_ctx, fh);
-    videodev = ctx->video;
-
-    mutex_lock(&videodev->ioctl_lock);
-    oldq = videodev->vdev.queue;
-    videodev->vdev.queue = &ctx->vbq;
-    ret = vb2_fop_poll(file, wait);
-    videodev->vdev.queue = oldq;
-    mutex_unlock(&videodev->ioctl_lock);
-
-    return ret;
+	if (!file->private_data)
+		return EPOLLERR;
+	ctx = hws_ctx_from_file(file);
+	mutex_lock(&ctx->qmutex);
+	ret = vb2_poll(&ctx->vbq, file, wait);
+	mutex_unlock(&ctx->qmutex);
+	return ret;
 }
 
 static int hws_mmap(struct file *file, struct vm_area_struct *vma)
 {
-    struct v4l2_fh *fh = file->private_data;
-    struct hws_vfh_ctx *ctx;
-    struct hws_video *videodev;
-    struct vb2_queue *oldq;
-    int ret;
+	if (!file->private_data)
+		return -EINVAL;
+	return vb2_mmap(&hws_ctx_from_file(file)->vbq, vma);
+}
 
-    if (!fh)
-        return -EINVAL;
-    ctx = container_of(fh, struct hws_vfh_ctx, fh);
-    videodev = ctx->video;
+/* buffer ioctls: the caller's own queue, under its own lock */
+static int hws_reqbufs(struct file *file, void *priv, struct v4l2_requestbuffers *p)
+{
+	struct hws_vfh_ctx *ctx = hws_ctx_from_file(file);
+	int ret;
+	mutex_lock(&ctx->qmutex);
+	ret = vb2_reqbufs(&ctx->vbq, p);
+	mutex_unlock(&ctx->qmutex);
+	return ret;
+}
 
-    mutex_lock(&videodev->ioctl_lock);
-    oldq = videodev->vdev.queue;
-    videodev->vdev.queue = &ctx->vbq;
-    ret = vb2_fop_mmap(file, vma);
-    videodev->vdev.queue = oldq;
-    mutex_unlock(&videodev->ioctl_lock);
+static int hws_create_bufs(struct file *file, void *priv, struct v4l2_create_buffers *p)
+{
+	struct hws_vfh_ctx *ctx = hws_ctx_from_file(file);
+	int ret;
+	mutex_lock(&ctx->qmutex);
+	ret = vb2_create_bufs(&ctx->vbq, p);
+	mutex_unlock(&ctx->qmutex);
+	return ret;
+}
 
-    return ret;
+static int hws_querybuf(struct file *file, void *priv, struct v4l2_buffer *p)
+{
+	struct hws_vfh_ctx *ctx = hws_ctx_from_file(file);
+	int ret;
+	mutex_lock(&ctx->qmutex);
+	ret = vb2_querybuf(&ctx->vbq, p);
+	mutex_unlock(&ctx->qmutex);
+	return ret;
+}
+
+static int hws_prepare_buf(struct file *file, void *priv, struct v4l2_buffer *p)
+{
+	struct hws_vfh_ctx *ctx = hws_ctx_from_file(file);
+	int ret;
+	mutex_lock(&ctx->qmutex);
+	ret = vb2_prepare_buf(&ctx->vbq, ctx->fh.vdev->v4l2_dev->mdev, p);
+	mutex_unlock(&ctx->qmutex);
+	return ret;
+}
+
+static int hws_qbuf(struct file *file, void *priv, struct v4l2_buffer *p)
+{
+	struct hws_vfh_ctx *ctx = hws_ctx_from_file(file);
+	int ret;
+	mutex_lock(&ctx->qmutex);
+	ret = vb2_qbuf(&ctx->vbq, ctx->fh.vdev->v4l2_dev->mdev, p);
+	mutex_unlock(&ctx->qmutex);
+	return ret;
+}
+
+static int hws_dqbuf(struct file *file, void *priv, struct v4l2_buffer *p)
+{
+	struct hws_vfh_ctx *ctx = hws_ctx_from_file(file);
+	int ret;
+	mutex_lock(&ctx->qmutex);
+	ret = vb2_dqbuf(&ctx->vbq, p, file->f_flags & O_NONBLOCK);
+	mutex_unlock(&ctx->qmutex);
+	return ret;
+}
+
+static int hws_streamon(struct file *file, void *priv, enum v4l2_buf_type type)
+{
+	struct hws_vfh_ctx *ctx = hws_ctx_from_file(file);
+	int ret;
+	mutex_lock(&ctx->qmutex);
+	ret = vb2_streamon(&ctx->vbq, type);
+	mutex_unlock(&ctx->qmutex);
+	return ret;
+}
+
+static int hws_streamoff(struct file *file, void *priv, enum v4l2_buf_type type)
+{
+	struct hws_vfh_ctx *ctx = hws_ctx_from_file(file);
+	int ret;
+	mutex_lock(&ctx->qmutex);
+	ret = vb2_streamoff(&ctx->vbq, type);
+	mutex_unlock(&ctx->qmutex);
+	return ret;
 }
 
 /* forward declaration */
@@ -1424,14 +1510,14 @@ static const struct v4l2_ioctl_ops hws_ioctl_fops = {
 	.vidioc_g_fmt_vid_cap = hws_vidioc_g_fmt_vid_cap,
 	.vidioc_s_fmt_vid_cap = vidioc_s_fmt_vid_cap,
 	.vidioc_try_fmt_vid_cap = hws_vidioc_try_fmt_vid_cap,
-	.vidioc_reqbufs       = vb2_ioctl_reqbufs,
-	.vidioc_prepare_buf   = vb2_ioctl_prepare_buf,
-	.vidioc_create_bufs   = vb2_ioctl_create_bufs,
-	.vidioc_querybuf      = vb2_ioctl_querybuf,
-	.vidioc_qbuf          = vb2_ioctl_qbuf,
-	.vidioc_dqbuf         = vb2_ioctl_dqbuf,
-	.vidioc_streamon      = vb2_ioctl_streamon,
-	.vidioc_streamoff     = vb2_ioctl_streamoff,
+	.vidioc_reqbufs       = hws_reqbufs,
+	.vidioc_prepare_buf   = hws_prepare_buf,
+	.vidioc_create_bufs   = hws_create_bufs,
+	.vidioc_querybuf      = hws_querybuf,
+	.vidioc_qbuf          = hws_qbuf,
+	.vidioc_dqbuf         = hws_dqbuf,
+	.vidioc_streamon      = hws_streamon,
+	.vidioc_streamoff     = hws_streamoff,
 	.vidioc_g_std = hws_vidioc_g_std,
 	.vidioc_s_std = hws_vidioc_s_std,
 	.vidioc_enum_framesizes   	= hws_vidioc_enum_framesizes,
@@ -1705,11 +1791,14 @@ static int hws_start_streaming_multi(struct vb2_queue *q, unsigned int count)
 
     ctx->streaming = true;
 
-    /* Start hardware engine only once, on first streamer */
+    /* Start hardware engine only once, on first streamer. engine_lock keeps a
+     * start from one consumer from interleaving with a stop from another. */
+    mutex_lock(&videodev->engine_lock);
     if (atomic_inc_return(&videodev->engine_users) == 1) {
         videodev->seqnr = 0;
         StartVideoCapture(videodev->dev, videodev->index);
     }
+    mutex_unlock(&videodev->engine_lock);
     return 0;
 }
 
@@ -1732,8 +1821,10 @@ static void hws_stop_streaming_multi(struct vb2_queue *q)
     spin_unlock_irqrestore(&ctx->qlock, flags);
 
     /* Stop engine when the last streamer goes away */
+    mutex_lock(&videodev->engine_lock);
     if (atomic_dec_return(&videodev->engine_users) == 0)
         StopVideoCapture(videodev->dev, videodev->index);
+    mutex_unlock(&videodev->engine_lock);
 }
 
 static const struct vb2_ops hwspcie_video_multi_qops = {
@@ -3686,7 +3777,7 @@ int hws_video_register(struct hws_pcie_dev *dev)
 		//-------------------
 		vdev->device_caps = V4L2_CAP_VIDEO_CAPTURE | V4L2_CAP_STREAMING;
 		vdev->v4l2_dev = &(dev->video[i].v4l2_dev);
-		vdev->lock = &(dev->video[i].video_lock);
+		vdev->lock = NULL;	/* locking is per queue, see hws_unlocked_ioctl() */
 		vdev->fops = &hws_fops;
 		strcpy(vdev->name,KBUILD_MODNAME);
 		vdev->release = video_device_release_empty;
@@ -3696,6 +3787,7 @@ int hws_video_register(struct hws_pcie_dev *dev)
 		mutex_init(&(dev->video[i].queue_lock));
 		spin_lock_init(&dev->video[i].consumers_lock);
 		mutex_init(&dev->video[i].ioctl_lock);
+		mutex_init(&dev->video[i].engine_lock);
 		INIT_LIST_HEAD(&dev->video[i].consumers);
 		atomic_set(&dev->video[i].engine_users, 0);
 
@@ -3722,7 +3814,7 @@ int hws_video_register(struct hws_pcie_dev *dev)
 
 		q->lock = &(dev->video[i].queue_lock);
 		q->dev = &(dev->pdev->dev);
-		vdev->queue = q;
+		vdev->queue = NULL;	/* each open() has its own queue */
 		err = vb2_queue_init(q);
 		if(err != 0){
 			printk(KERN_ERR " vb2_queue_init failed !!!!! \n");

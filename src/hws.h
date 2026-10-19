@@ -323,7 +323,8 @@ struct hws_video{
 	struct mutex			queue_lock;
 	/* B1: multi-consumer */
 	spinlock_t			consumers_lock;
-	struct mutex			ioctl_lock;
+	struct mutex			ioctl_lock;	/* non-buffer ioctls (shared format/state) */
+	struct mutex			engine_lock;	/* StartVideoCapture/StopVideoCapture */
 	struct list_head		consumers;
 	atomic_t			engine_users;
 	spinlock_t				slock;
