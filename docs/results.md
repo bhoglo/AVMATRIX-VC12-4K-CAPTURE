@@ -141,3 +141,14 @@ Driver `fa5b301`, module srcversion `E3F8F6E0072AD04809ACE89`, after a reboot on
 debugfs `dma`: every video address register reaches its own buffer. Buffer 2 spans IOVA 0xfe800000–0xfec7ffff, so 0xfec00000, where the stray writes faulted before stage 1, is now inside it, in the unused gap past the 4K quarter. The faults may have stopped only because that address became mapped. `8a67155` adds a canary in each buffer's gap to show whether the card still writes there.
 
 An OBS start before the console's signal had locked opened at the 1920×1080 default and kept it once the 4K signal arrived, scaled to 1080p and drawn as a quarter of the 4K canvas. Reopening the source fixes it; H.3 automates that.
+
+### Operator session (driver `8a67155`, srcversion `C7DCAC889AAA7812B57DE3F`)
+
+A 15-minute OBS session at 3840×2160 with console audio, two quick OBS restarts, a suspend with OBS closed (11:28:54–11:29:51, `resumed, card re-initialised`), and OBS reopened at 4K after the wake.
+
+| Check | Result |
+|---|---|
+| `IO_PAGE_FAULT` | 0 across all of it |
+| Canary in each DMA buffer's gap | Untouched in all four buffers, including buffer 2 around 0xfec00000. This build refilled it at every capture start, so it covered only the last OBS start and stop; `df0a168` keeps it across starts. |
+| debugfs status | 0 half-queue overflows; 1 lost frame (a bottom half without its top half at a capture start) |
+| Measured rate | 16.667 ms on a fresh capture. The value left after the last short OBS session read 17.8 ms; it is only updated while capturing. |
