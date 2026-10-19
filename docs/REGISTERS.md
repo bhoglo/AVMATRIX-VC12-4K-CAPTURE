@@ -84,6 +84,7 @@ What it shows beyond the table above:
   - sharpness: 0–255, default 0, stored but never applied.
 
   A leftover VideoEncoder property set has two 1–240 values (default 60) that nothing uses. There's no video-decoder status, crossbar or vendor-specific property set.
+- **Status polling.** A system thread polls the input every 50 ms; this driver polls every 250 ms. With no signal, every tenth poll wakes each open stream to deliver a "No Video" frame. The same thread tears the device down after a surprise removal.
 - **Interrupts.** Windows handles only channel 0. In its status poll and interrupt handler, it reads back every register it writes and treats 0xFFFFFFFF as a removed card.
 - **Absent.** No EDID, I²C, InfoFrame, HDR, audio-format or temperature access. Every BAR0 offset the driver uses is in the tables above.
 
