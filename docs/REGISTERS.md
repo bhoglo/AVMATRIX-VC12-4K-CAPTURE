@@ -108,7 +108,17 @@ What follows from the parts, as inferences:
 - **The FPGA can't buffer frames.** The XC7A35T has 1.8 Mbit of block RAM (about 30 lines of 4K YUYV), and there is no external memory. Every frame goes straight to host memory, which is why the frame arrives as four quarters through four DMA buffers. A scaler that only needs line buffers would fit; one that needs whole frames would not.
 - **HDMI reaches the FPGA as a parallel bus.** The XC7A35T has 4 GTP transceivers, and PCIe Gen2 x4 uses all of them. So HDMI can't be terminated in the FPGA: the GSV2011 receives it and passes video to the FPGA over the many parallel traces between them. A reseller page describes the GSV1011, its pin-compatible HDMI 1.4 sibling, as having an LVDS/TTL video bus and I²S/SPDIF/TDM audio.
 - **EDID, InfoFrames, HDCP and colour handling live in the GSV2011.** The same page lists colour-space conversion, deinterlacing and down-conversion for the GSV1011. They are configured by whatever programs the GSV2011, probably the unmarked microcontroller, and not by the host. The Windows driver has no I²C or EDID access, and no host register for these was found. The fixed full-range output (stage 4.5) and the 1920×540 interlaced field format are presumably set there.
-- **The GSV2011 has no public datasheet.**
+- **The GSV2011 has public specification excerpts, without the register map.** GSCoolink's *GSV2011 Product Specification* Rev. 1.0 (4 pages) and Rev. 1.4 (8 pages, of 53) are published by the distributor Onway Tech. They describe:
+  - an HDMI 2.0b / 1.4b repeater (receiver plus loop-out transmitter), controlled over I²C (SCL/SDA);
+  - HDCP 1.4 and 2.2/2.3;
+  - 600 MHz pixel clock, 4K60 4:4:4 8-bit;
+  - a bidirectional LVDS bus (up to 15 pairs, 1.5 Gbit/s per lane) or a 48-bit TTL bus, "compatible with series FPGAs' LVDS standard";
+  - a colour-space converter, dither, 4:2:0↔4:4:4 conversion, a deinterlacer and a **downscaler** ("this mode can also downscale all the 4K to 2K for LVDS/TTL output");
+  - HDR10/HDR12/Dolby Vision/HLG support;
+  - audio extraction up to 8-channel I²S or TDM at 192 kHz, or 2-channel S/PDIF.
+
+  The EDID, register and control chapters are not in the excerpts. The card uses a fraction of this: it delivers 8-bit 4:2:2 and 48 kHz stereo, presumably as the microcontroller configures it.
+- **Registers 120 and 130 may drive the GSV2011's downscaler.** The FPGA has no frame memory, but the HDMI chip can downscale 4K to 2K before the video reaches it. The Windows driver writes the requested size to register 120 every poll, yet sizes the DMA from the input-size register. Both fit if the microcontroller reads register 120, sets up the downscaler, and the input-size register then reports the smaller size. Stage 4.3's probe tests this: write 1920×1080 to register 120 during a 4K stream and watch whether register 90 changes.
 
 ## Vendor ancestry
 
