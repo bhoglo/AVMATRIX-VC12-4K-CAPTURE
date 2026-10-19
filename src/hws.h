@@ -70,7 +70,8 @@
 #include <linux/semaphore.h>   
 #include <linux/sched.h>    
 #include <linux/wait.h>
-#include <linux/kfifo.h>   
+#include <linux/kfifo.h>
+#include <linux/debugfs.h>   
 
 
 //---------------------------------------------
@@ -276,6 +277,17 @@ enum DVRS_HW_TYPES {
 struct hws_pcie_dev;
 struct hws_adapter;
 
+/* DMA address registers, recorded each time capture is enabled or disabled (debugfs regsnaps) */
+#define HWS_REGSNAPS 16
+struct hws_regsnap {
+	u64	ts;		/* CLOCK_MONOTONIC */
+	char	what;		/* 'V' video, 'A' audio */
+	u8	en;
+	u32	ctl, ven, aen;	/* registers 0, 2, 3 */
+	u32	tbl_hi[4], tbl_lo[4];	/* address-translation entries */
+	u32	vbuf[4], abuf[4];	/* registers 16 + i and 24 + i */
+};
+
 /* one half-frame completion, queued by the hard IRQ handler */
 struct hws_half_event {
 	u64	ts;	/* CLOCK_MONOTONIC when the interrupt arrived */
@@ -410,6 +422,12 @@ struct hws_pcie_dev {
 	/* half-frame completions from the hard IRQ handler to the IRQ thread (channel 0) */
 	DECLARE_KFIFO(half_events, struct hws_half_event, 16);
 	int video_toggle[MAX_VID_CHANNELS];	/* last half-frame toggle seen, -1 = none */
+	/* debugfs (stage 3.5, 3.6) */
+	struct dentry *dbg;
+	u32 irq_total, irq_video, irq_audio, irq_fifo_full;	/* updated only by irqhandler */
+	spinlock_t snap_lock;
+	struct hws_regsnap snaps[HWS_REGSNAPS];
+	u32 snap_next;
  	unsigned long audio_data[MAX_VID_CHANNELS];
  	struct tasklet_struct dpc_audio_tasklet[MAX_VID_CHANNELS];
 	//-----------------------------
