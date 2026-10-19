@@ -398,6 +398,14 @@ struct hws_audio{
 	int                         ring_over_size;
 	void                        *resampled_buf;
 	u32                         resampled_buf_size;
+	/* silence while the card sends no audio, see hws_audio_silence_work() */
+	struct delayed_work         silence_work;
+	bool                        running;		/* between trigger start and stop */
+	bool                        in_gap;
+	u64                         last_pkt_ns;	/* last packet from the card, or the start */
+	u64                         silence_frames;	/* silence delivered since last_pkt_ns */
+	u32                         silence_gaps;	/* gaps filled (debugfs) */
+	u32                         silence_pkts;	/* packets of silence delivered (debugfs) */
 	spinlock_t                  ring_lock;
     uint32_t                    ring_wpos_byframes;
     uint32_t                    ring_size_byframes;

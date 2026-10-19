@@ -1705,6 +1705,64 @@ static int _deliver_samples(struct hws_audio *drv, void *aud_data, u32 aud_len)
 	return frames * 2 * drv->channels;
 }
 
+/*
+ * Silence while the card sends no audio. During a source mode change
+ * (3-4 s on a PS5 resolution change), with no source, or with an HDMI
+ * source that sends no audio, the card raises no audio interrupts, so the
+ * ALSA pointer stands still. PipeWire then re-delivers its last few
+ * buffers of the card's audio over and over (a loop of 4864-5120 frames),
+ * heard as a buzz. Once no packet has arrived for HWS_AUD_GAP_NS, this
+ * delivers whole packets of silence at 48 kHz from the last packet's time
+ * until the card's packets resume.
+ */
+#define HWS_AUD_GAP_NS		(40 * NSEC_PER_MSEC)	/* packets come every 21.3 ms */
+#define HWS_AUD_GAP_POLL_MS	5
+
+static const u8 hws_silence[MAX_DMA_AUDIO_PK_SIZE];
+
+/* With pdx->audiolock[ch] held. */
+static void hws_audio_card_packet(struct hws_audio *drv)
+{
+	drv->last_pkt_ns = ktime_get_ns();
+	drv->silence_frames = 0;
+	drv->in_gap = false;
+}
+
+static void hws_audio_silence_work(struct work_struct *work)
+{
+	struct hws_audio *drv = container_of(to_delayed_work(work), struct hws_audio, silence_work);
+	struct hws_pcie_dev *pdx = drv->dev;
+	const u32 pkt_frames = MAX_DMA_AUDIO_PK_SIZE / (2 * 2);
+	unsigned long flags;
+	unsigned int next_ms = HWS_AUD_GAP_POLL_MS;
+	u64 gap, due;
+
+	spin_lock_irqsave(&pdx->audiolock[drv->index], flags);
+	if (!READ_ONCE(drv->running)) {
+		spin_unlock_irqrestore(&pdx->audiolock[drv->index], flags);
+		return;
+	}
+	gap = ktime_get_ns() - drv->last_pkt_ns;
+	if (gap > HWS_AUD_GAP_NS) {
+		if (!drv->in_gap) {
+			drv->in_gap = true;
+			drv->silence_gaps++;
+		}
+		due = div_u64(gap * 48, NSEC_PER_MSEC);	/* frames at 48 kHz */
+		while (drv->silence_frames + pkt_frames <= due) {
+			_deliver_samples(drv, (void *)hws_silence, sizeof(hws_silence));
+			drv->silence_frames += pkt_frames;
+			drv->silence_pkts++;
+		}
+	} else {
+		/* packets are flowing: look again when the next would be late */
+		next_ms = div_u64(HWS_AUD_GAP_NS - gap, NSEC_PER_MSEC) + 1;
+	}
+	spin_unlock_irqrestore(&pdx->audiolock[drv->index], flags);
+	queue_delayed_work(pdx->auwq, &drv->silence_work,
+			   max_t(unsigned long, 1, msecs_to_jiffies(next_ms)));
+}
+
 void audio_data_process(struct work_struct *p_work)
 {
 	struct hws_audio *drv = container_of(p_work, struct hws_audio, audiowork);
@@ -1762,6 +1820,7 @@ void audio_data_process(struct work_struct *p_work)
 		break;
 	{
 		//--- send data -------------
+		hws_audio_card_packet(drv);
 		delived = _deliver_samples(drv,bBuf, aud_len);
 		#if 0
 		avail = aud_len - delived;
@@ -3846,7 +3905,10 @@ int hws_pcie_audio_hw_params(struct snd_pcm_substream *substream, struct snd_pcm
 
 int hws_pcie_audio_hw_free(struct snd_pcm_substream *substream)
 {
+	struct hws_audio *drv = snd_pcm_substream_chip(substream);
+
 	//printk(KERN_INFO "%s() \n",__func__);
+	cancel_delayed_work_sync(&drv->silence_work);	/* it writes the buffer */
 	return snd_pcm_lib_free_pages(substream);
 }
 
@@ -3883,6 +3945,14 @@ int hws_pcie_audio_trigger(struct snd_pcm_substream *substream, int cmd)
 			//printk(KERN_INFO "SNDRV_PCM_TRIGGER_START index:%x\n",chip->index);
 			chip->ring_wpos_byframes = 0;
 			chip->period_used_byframes = 0;
+			/*
+			 * No audiolock here: the audio work holds it while
+			 * snd_pcm_period_elapsed() takes the stream lock that
+			 * trigger runs under.
+			 */
+			hws_audio_card_packet(chip);
+			WRITE_ONCE(chip->running, true);
+			queue_delayed_work(dev->auwq, &chip->silence_work, 0);
 			StartAudioCapture(dev,chip->index);
 			break;
 		case SNDRV_PCM_TRIGGER_STOP:
@@ -3890,6 +3960,8 @@ int hws_pcie_audio_trigger(struct snd_pcm_substream *substream, int cmd)
 			//HWS_PCIE_WRITE(HWS_INT_BASE, HWS_DMA_MASK(chip->index), 0x000000000);
 			//HWS_PCIE_WRITE(HWS_DMA_BASE(chip->index), HWS_DMA_START, 0x00000000);
 			//printk(KERN_INFO "SNDRV_PCM_TRIGGER_STOP index:%x\n",chip->index);
+			WRITE_ONCE(chip->running, false);
+			cancel_delayed_work(&chip->silence_work);
 			StopAudioCapture(dev,chip->index);
 			break;
 		default:
@@ -3983,6 +4055,7 @@ int hws_audio_register(struct hws_pcie_dev *dev)
 		//-----------------
 		spin_lock_init(&dev->audio[i].ring_lock);
 		INIT_WORK(&dev->audio[i].audiowork,audio_data_process);
+		INIT_DELAYED_WORK(&dev->audio[i].silence_work, hws_audio_silence_work);
 		ret = snd_card_register(card);
 		if ( ret < 0) {
 			printk(KERN_ERR "%s() ERROR: snd_card_register failed\n",__func__);
@@ -4395,6 +4468,10 @@ static void hws_remove(struct pci_dev *pdev)
 	StopDevice(dev);
 	irq_teardown(dev);
 	tasklet_kill(&dev->dpc_audio_tasklet[0]);
+	for (i = 0; i < dev->m_nCurreMaxVideoChl; i++) {
+		WRITE_ONCE(dev->audio[i].running, false);
+		cancel_delayed_work_sync(&dev->audio[i].silence_work);
+	}
 	destroy_workqueue(dev->auwq);
 	dev->auwq = NULL;
 	for (i = 0; i < dev->m_nCurreMaxVideoChl; i++) {
@@ -5685,6 +5762,9 @@ static int hws_dbg_status_show(struct seq_file *m, void *unused)
 	seq_printf(m, "interrupts: %u, video halves: %u, audio packets: %u, half queue full: %u\n",
 		   READ_ONCE(pdx->irq_total), READ_ONCE(pdx->irq_video),
 		   READ_ONCE(pdx->irq_audio), READ_ONCE(pdx->irq_fifo_full));
+	seq_printf(m, "audio: gaps filled with silence: %u, silence packets: %u%s\n",
+		   READ_ONCE(pdx->audio[0].silence_gaps), READ_ONCE(pdx->audio[0].silence_pkts),
+		   READ_ONCE(pdx->audio[0].in_gap) ? ", in a gap now" : "");
 	spin_lock_irqsave(&v->consumers_lock, flags);
 	list_for_each_entry(ctx, &v->consumers, node) {
 		n++;
