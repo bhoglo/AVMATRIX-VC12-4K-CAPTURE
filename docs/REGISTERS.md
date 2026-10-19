@@ -52,15 +52,14 @@ The translation entries match the layout of the `AXIBAR2PCIEBAR_nU`/`nL` registe
 | 90 + 2·ch | R | Input size: width in bits 15:0, height in bits 31:16. The height is per field when the input is interlaced.<br><br>Windows accepts progressive input up to 4096 × 2200, and interlaced input only as 1920 × 540, 720 × 288 or 720 × 240 fields. After a size change it waits 100 ms before reprogramming the quarter lengths. | driver, windows, mainline | 3840×2160 |
 | 91 + 2·ch | R/W | Picture: saturation << 24, hue << 16, contrast << 8, brightness. Hue reads back but has no visible effect.<br><br>Windows writes this register only on FPGA versions above 122. On 122 and earlier it applies brightness, contrast and saturation in software instead. This card is version 122, and writing the register visibly changes its image. | driver, windows, mainline | |
 | 110 + ch | R | Input frame rate in whole fps. Windows reads it on FPGA 122 and later. | windows, mainline | 60 |
-| 120 + ch | R/W | Output size (h << 16 \| w). On FPGA 122 and later, Windows writes the app's requested size here on every status poll, as mainline does. Windows still sizes the DMA from the input and scales on the CPU, so whether this register changes the delivered data is unknown (stage 4.3). | windows, mainline | 1920×1080 |
-| 130 + ch | R/W | Output frame rate. On FPGA 122 and later, Windows writes the app's requested rate here on every status poll and doesn't skip frames itself. | windows, mainline | 60 |
+| 120 + ch | R/W | Output size (h << 16 \| w). On FPGA 122 and later, Windows writes the app's requested size here on every status poll, as mainline does. Probe 4.3: writes read back but change nothing observable (input size, input rate, delivered frames). | windows, mainline, measured | 1920×1080 |
+| 130 + ch | R/W | Output frame rate. On FPGA 122 and later, Windows writes the app's requested rate here on every status poll and doesn't skip frames itself. Probe 4.3: writing 30 left the frame interrupt rate at 60 fps. | windows, mainline, measured | 60 |
 
 ## Not yet known
 
 - What bits other than those listed do in registers 0, 1 and 0x144.
 - What register 4 holds; Windows only logs it.
 - Bits 7:0 of register 88, which read 0xFF here.
-- Whether registers 120 and 130 change what the card delivers. Stage 4.3 probes them.
 - Every register not listed above, notably 54–87 and 92–109. The Windows driver touches none of them.
 - Whether the card gives the host any access to its HDMI receiver: EDID, InfoFrames, audio format. The Windows driver has no such access (see below).
 

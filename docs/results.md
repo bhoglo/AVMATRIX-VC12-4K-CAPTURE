@@ -252,3 +252,16 @@ PS5 connected at 3840×2160p60 with OBS capturing. The operator turned Settings 
 | Signal re-handshakes at each HDCP toggle | OBS logged 31 "select timed out"; each made OBS call `LOG_STATUS`, 293 status dumps this boot. Rate-limited in the next commit. Canary hits only at the register 9 limit, inside the buffers; 0 `IO_PAGE_FAULT` |
 
 **4.5 settled:** a limited-range source has black at Y = 16, but the PS5 on Limited arrives with black at Y ≈ 1. So the card converts its input to full range, presumably in the GSV2011's colour-space converter, whatever the console sends. With the Switch 2 results, the format's full-range label is right for every source tested.
+
+### 4.3: registers 120 and 130 (probe)
+
+Driver `96dd3f1`, OBS closed, a 2700-frame 3840×2160 capture running as the observer, `tests/regprobe.py` (each value read back, restored on exit). 2026-10-19.
+
+| Write | Reads back | Register 90 (input size) | Register 110 (input fps) | Frame interrupts |
+|---|---|---|---|---|
+| 120 = 3840×2160 | yes | 3840×2160, unchanged for 3 s | 60, unchanged | — |
+| 120 = 1920×1080 | yes | unchanged | unchanged | — |
+| 120 = 1280×720 | yes | unchanged | unchanged | — |
+| 130 = 30 | yes | unchanged | unchanged | 121 halves/s before and during, 120 after restore (60 fps) |
+
+The observing capture completed all 2700 frames, 3 lost; no canary hits, 0 `IO_PAGE_FAULT`. Register 120 also holds 1920×1080 from reset while the input arrives at 4K across every signal re-lock. **On this card (FPGA 122) registers 120 and 130 are storage with no observable effect**; the card's own scaling (4096×2160 to 3840×2160) is not controlled from the host. The driver keeps its CPU scaler.
