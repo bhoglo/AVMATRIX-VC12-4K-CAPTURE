@@ -3558,206 +3558,153 @@ static int  MemCopyFrame(int nDecoder,BYTE * dest,int nWidth,int nHeight,int int
 }
 
 //--------------------------------
-static struct hwsvideo_buffer *hws_pop_any_buffer(struct hws_video *videodev, struct hws_vfh_ctx **out_ctx)
+/*
+ * Move one queued buffer from each streaming consumer onto @out and count it
+ * as in flight. One per consumer, so every app gets each frame once; this used
+ * to drain every queued buffer and fill them all with the same frame.
+ */
+static void hws_pop_one_per_consumer(struct hws_video *videodev, struct list_head *out)
 {
-    struct hws_vfh_ctx *ctx;
-    struct hwsvideo_buffer *buf = NULL;
-    unsigned long flags;
+	struct hws_vfh_ctx *ctx;
+	unsigned long flags, qflags;
 
-    *out_ctx = NULL;
-
-    spin_lock_irqsave(&videodev->consumers_lock, flags);
-    list_for_each_entry(ctx, &videodev->consumers, node) {
-        unsigned long qflags;
-        if (!ctx->streaming)
-            continue;
-        spin_lock_irqsave(&ctx->qlock, qflags);
-        if (!list_empty(&ctx->buf_queue)) {
-            buf = list_first_entry(&ctx->buf_queue, struct hwsvideo_buffer, queue);
-            list_del(&buf->queue);
-            atomic_inc(&ctx->inflight);
-            *out_ctx = ctx;
-            spin_unlock_irqrestore(&ctx->qlock, qflags);
-            break;
-        }
-        spin_unlock_irqrestore(&ctx->qlock, qflags);
-    }
-    spin_unlock_irqrestore(&videodev->consumers_lock, flags);
-
-    return buf;
+	spin_lock_irqsave(&videodev->consumers_lock, flags);
+	list_for_each_entry(ctx, &videodev->consumers, node) {
+		if (!ctx->streaming)
+			continue;
+		spin_lock_irqsave(&ctx->qlock, qflags);
+		if (!list_empty(&ctx->buf_queue)) {
+			list_move_tail(ctx->buf_queue.next, out);
+			atomic_inc(&ctx->inflight);
+		}
+		spin_unlock_irqrestore(&ctx->qlock, qflags);
+	}
+	spin_unlock_irqrestore(&videodev->consumers_lock, flags);
 }
-/* Complete a buffer popped by hws_pop_any_buffer() and release its in-flight count. */
-static void hws_complete_buffer(struct hws_vfh_ctx *ctx, struct hwsvideo_buffer *buf,
-				enum vb2_buffer_state state)
+
+/* Complete a buffer popped by hws_pop_one_per_consumer() and drop its in-flight count. */
+static void hws_complete_buffer(struct hwsvideo_buffer *buf, enum vb2_buffer_state state)
 {
+	struct hws_vfh_ctx *ctx = vb2_get_drv_priv(buf->vb.vb2_buf.vb2_queue);
+
 	vb2_buffer_done(&buf->vb.vb2_buf, state);
 	if (atomic_dec_and_test(&ctx->inflight))
 		wake_up(&ctx->inflight_wq);
 }
 
+/*
+ * Deliver the newest complete frame to one buffer of each streaming consumer.
+ * videoslock is held only to pick the frame slot and mark it READING; the
+ * copies and scaling run with interrupts enabled (they used to run under
+ * spin_lock_irqsave, for milliseconds per buffer). With several consumers the
+ * frame is produced once and memcpy'd to the others.
+ */
 void video_data_process(struct work_struct *p_work)
 {
 	struct hws_video *videodev = container_of(p_work, struct hws_video, videowork);
-	struct hwsvideo_buffer *buf;
-	//unsigned long flags;
-	unsigned long devflags;
-	int nVindex=-1;
-	int i;
-	//int copysize;
-	//uint8_t *pSrc;
-	int in_width;
-	int in_height;
-	int in_vsize;
-	int out_size=0;
-	BYTE *bBuf[4];
-	int  nCopySize[4];
-	int interlace;
-	int miss_freme =0;
 	struct hws_pcie_dev *pdx = videodev->dev;
-	int nCh;
+	int nCh = videodev->index;
+	ACAP_VIDEO_INFO *vi = &pdx->m_VideoInfo[nCh];
+	struct hwsvideo_buffer *buf, *tmp;
+	LIST_HEAD(todo);
+	unsigned long flags;
+	int slot = -1, i, k, no_video;
+	int in_w = 0, in_h = 0, interlace = 0, out_w, out_h, out_size;
+	BYTE *bBuf[4] = { NULL, NULL, NULL, NULL };
+	int nCopySize[4] = { 0, 0, 0, 0 };
+	BYTE *first = NULL;
+	enum vb2_buffer_state state;
 	u64 frame_ts;
 	u32 frame_seq;
-	bBuf[0] = NULL;
-	bBuf[1] = NULL;
-	bBuf[2] = NULL;
-	bBuf[3] = NULL;
-	nCopySize[0] =0;
-	nCopySize[1] =0;
-	nCopySize[2] =0;
-	nCopySize[3] =0;
-	nCh = videodev->index;
-	spin_lock_irqsave(&pdx->videoslock[nCh], devflags);
-	in_width = pdx->m_pVCAPStatus[nCh][0].dwWidth ;
-	in_height = pdx->m_pVCAPStatus[nCh][0].dwHeight;
-	if(pdx->m_pVCAPStatus[nCh][0].dwinterlace ==1)
-	{
-		in_height = in_height*2;
-	}
-	in_vsize = in_width*in_height*2;
 
-	//printk("video_data_process [%d]dev->m_curr_No_Video[videodev->index] =%d \n",videodev->index,dev->m_curr_No_Video[videodev->index]);
-	//---------------------------
-	if(pdx->m_curr_No_Video[nCh]==0 )
-	{
-		nVindex = -1;
-		if(pdx->m_VideoInfo[nCh].pStatusInfo[pdx->m_nRDVideoIndex[nCh]].byLock == MEM_LOCK)
-		{
-			nVindex =pdx->m_nRDVideoIndex[nCh];
-			bBuf[0]  = pdx->m_VideoInfo[nCh].m_pVideoBufData[nVindex];
-			bBuf[1] = pdx->m_VideoInfo[nCh].m_pVideoBufData1[nVindex];
-			bBuf[2] = pdx->m_VideoInfo[nCh].m_pVideoBufData2[nVindex];
-			bBuf[3] = pdx->m_VideoInfo[nCh].m_pVideoBufData3[nVindex];
-			nCopySize[0] = pdx->m_VideoInfo[nCh].m_VideoBufferSize[0];
-			nCopySize[1] = pdx->m_VideoInfo[nCh].m_VideoBufferSize[1];
-			nCopySize[2] = pdx->m_VideoInfo[nCh].m_VideoBufferSize[2];
-			nCopySize[3] = pdx->m_VideoInfo[nCh].m_VideoBufferSize[3];
-			interlace = pdx->m_VideoInfo[nCh].pStatusInfo[nVindex].dwinterlace;
-		}
-		if(nVindex== -1)
-		{
-			miss_freme = 1;
-			if(pdx->m_nRDVideoIndex[nCh] == 0)
-			{
-				nVindex = MAX_VIDEO_QUEUE-1;
-			}
-			else
-			{
-				nVindex = pdx->m_nRDVideoIndex[nCh]-1;
-			}
-			bBuf[0]  = pdx->m_VideoInfo[nCh].m_pVideoBufData[nVindex];
-			bBuf[1] = pdx->m_VideoInfo[nCh].m_pVideoBufData1[nVindex];
-			bBuf[2] = pdx->m_VideoInfo[nCh].m_pVideoBufData2[nVindex];
-			bBuf[3] = pdx->m_VideoInfo[nCh].m_pVideoBufData3[nVindex];
-			nCopySize[0] = pdx->m_VideoInfo[nCh].m_VideoBufferSize[0];
-			nCopySize[1] = pdx->m_VideoInfo[nCh].m_VideoBufferSize[1];
-			nCopySize[2] = pdx->m_VideoInfo[nCh].m_VideoBufferSize[2];
-			nCopySize[3] = pdx->m_VideoInfo[nCh].m_VideoBufferSize[3];
-			interlace = pdx->m_VideoInfo[nCh].pStatusInfo[nVindex].dwinterlace;
-		}
-	}
-	else
-	{
-		//spin_lock_irqsave(&pdx->videoslock[nCh], devflags);
-		for( i = 0 ;i<MAX_VIDEO_QUEUE;i++)
-		{
-			if(pdx->m_VideoInfo[nCh].pStatusInfo[i].byLock == MEM_LOCK)
-			{
-				pdx->m_VideoInfo[nCh].pStatusInfo[i].byLock = MEM_UNLOCK;
+	spin_lock_irqsave(&pdx->videoslock[nCh], flags);
+	no_video = pdx->m_curr_No_Video[nCh];
+	if (!no_video) {
+		/* the newest complete frame sits just behind the writer */
+		for (i = 1; i <= MAX_VIDEO_QUEUE; i++) {
+			k = (vi->m_nVideoIndex + MAX_VIDEO_QUEUE - i) % MAX_VIDEO_QUEUE;
+			if (vi->pStatusInfo[k].byLock == MEM_LOCK) {
+				slot = k;
+				break;
 			}
 		}
-		//spin_unlock_irqrestore(&pdx->videoslock[nCh], devflags);
-	}
-	if(pdx->m_curr_No_Video[nCh]==0 && nVindex >= 0)
-	{
-		frame_ts = pdx->m_VideoInfo[nCh].pStatusInfo[nVindex].tsNs;
-		frame_seq = pdx->m_VideoInfo[nCh].pStatusInfo[nVindex].seq;
-	}
-	else
-	{
+		if (slot < 0) {
+			/* nothing new since the last run: deliver nothing */
+			spin_unlock_irqrestore(&pdx->videoslock[nCh], flags);
+			return;
+		}
+		/* older unread frames are stale by now */
+		for (k = 0; k < MAX_VIDEO_QUEUE; k++) {
+			if (k != slot && vi->pStatusInfo[k].byLock == MEM_LOCK) {
+				vi->pStatusInfo[k].byLock = MEM_UNLOCK;
+				pdx->m_FramesDropped[nCh]++;
+			}
+		}
+		vi->pStatusInfo[slot].byLock = MEM_READING;
+		in_w = vi->pStatusInfo[slot].dwWidth;
+		in_h = vi->pStatusInfo[slot].dwHeight;
+		interlace = vi->pStatusInfo[slot].dwinterlace;
+		if (interlace == 1)
+			in_h *= 2;	/* MemCopyFrame line-doubles each field */
+		for (i = 0; i < 4; i++)
+			nCopySize[i] = vi->pStatusInfo[slot].dwSize[i];
+		bBuf[0] = vi->m_pVideoBufData[slot];
+		bBuf[1] = vi->m_pVideoBufData1[slot];
+		bBuf[2] = vi->m_pVideoBufData2[slot];
+		bBuf[3] = vi->m_pVideoBufData3[slot];
+		frame_ts = vi->pStatusInfo[slot].tsNs;
+		frame_seq = vi->pStatusInfo[slot].seq;
+	} else {
+		/* no signal: discard captured frames and send a blue frame */
+		for (k = 0; k < MAX_VIDEO_QUEUE; k++)
+			if (vi->pStatusInfo[k].byLock == MEM_LOCK)
+				vi->pStatusInfo[k].byLock = MEM_UNLOCK;
 		frame_ts = ktime_get_ns();
 		frame_seq = pdx->m_FrameSeq[nCh]++;
 	}
-	//---------------------------
-	/* every write below is out_size bytes: scaled, native (in == out) or no-signal */
-	out_size = videodev->current_out_width*videodev->curren_out_height*2;
-	for (;;) {
-        struct hws_vfh_ctx *ctx;
-        struct hwsvideo_buffer *buf;
+	out_w = videodev->current_out_width;
+	out_h = videodev->curren_out_height;
+	spin_unlock_irqrestore(&pdx->videoslock[nCh], flags);
+	out_size = out_w * out_h * 2;
 
-        /* We cannot hold pdx spinlock while taking other locks. So: keep pdx lock held,
-         * but hws_pop_any_buffer only takes spinlocks (OK). */
-        buf = hws_pop_any_buffer(videodev, &ctx);
-        if (!buf)
-            break;
+	hws_pop_one_per_consumer(videodev, &todo);
 
-        /* every consumer's copy of this frame carries the frame's own time and number */
-        buf->vb.vb2_buf.timestamp = frame_ts;
-        buf->vb.field = V4L2_FIELD_NONE;
-
-        if (!buf->mem || vb2_plane_size(&buf->vb.vb2_buf, 0) < out_size) {
-            hws_complete_buffer(ctx, buf, VB2_BUF_STATE_ERROR);
-            continue;
-        }
-		// copy data to buffer
-		if(pdx->m_curr_No_Video[nCh]==0 )
-		{
-			if(in_vsize != out_size)
-			{
-				//printk("in_width =%d  in_height =%d \n",in_width,in_height);
-				//printk("out_width =%d out_height =%d \n",videodev->current_out_width,videodev->curren_out_height);
-				if(pdx->m_VideoInfo[nCh].m_pVideoScalerBuf)
-				{
-					MemCopyFrame(nCh,pdx->m_VideoInfo[nCh].m_pVideoScalerBuf,in_width,in_height,interlace,bBuf,nCopySize);
-					VideoScaler(pdx->m_VideoInfo[nCh].m_pVideoScalerBuf,buf->mem,in_width,in_height,videodev->current_out_width,videodev->curren_out_height);
-				}
-			}
+	list_for_each_entry_safe(buf, tmp, &todo, queue) {
+		list_del(&buf->queue);
+		state = VB2_BUF_STATE_DONE;
+		if (!buf->mem || vb2_plane_size(&buf->vb.vb2_buf, 0) < out_size) {
+			state = VB2_BUF_STATE_ERROR;
+		} else if (first) {
+			memcpy(buf->mem, first, out_size);
+		} else if (no_video) {
+			SetNoVideoMem(buf->mem, out_w, out_h);
+			first = buf->mem;
+		} else if (in_w == out_w && in_h == out_h) {
+			if (MemCopyFrame(nCh, buf->mem, in_w, in_h, interlace, bBuf, nCopySize) < 0)
+				state = VB2_BUF_STATE_ERROR;
 			else
-			{
-				MemCopyFrame(nCh,buf->mem,in_width,in_height,interlace,bBuf,nCopySize);
-			}
+				first = buf->mem;
+		} else if (vi->m_pVideoScalerBuf &&
+			   MemCopyFrame(nCh, vi->m_pVideoScalerBuf, in_w, in_h, interlace, bBuf, nCopySize) == 0) {
+			VideoScaler(vi->m_pVideoScalerBuf, buf->mem, in_w, in_h, out_w, out_h);
+			first = buf->mem;
+		} else {
+			state = VB2_BUF_STATE_ERROR;
 		}
-		else
-		{
-			SetNoVideoMem(buf->mem,videodev->current_out_width,videodev->curren_out_height);
-		}
+		/* every consumer's copy carries the frame's own time and number */
+		buf->vb.vb2_buf.timestamp = frame_ts;
+		buf->vb.field = V4L2_FIELD_NONE;
 		buf->vb.sequence = frame_seq;
-        vb2_set_plane_payload(&buf->vb.vb2_buf, 0, out_size);
-        hws_complete_buffer(ctx, buf, VB2_BUF_STATE_DONE);
+		if (state == VB2_BUF_STATE_DONE)
+			vb2_set_plane_payload(&buf->vb.vb2_buf, 0, out_size);
+		hws_complete_buffer(buf, state);
 	}
 
-	vexit:
-	//spin_lock_irqsave(&pdx->videoslock[nCh], devflags);
-	if(pdx->m_curr_No_Video[nCh]==0 && nVindex >= 0)
-	{
-		pdx->m_VideoInfo[nCh].pStatusInfo[nVindex].byLock  = MEM_UNLOCK;
-		pdx->m_nRDVideoIndex[nCh] = nVindex+1;
-		if(pdx->m_nRDVideoIndex[nCh] >=MAX_VIDEO_QUEUE)
-		{
-			pdx->m_nRDVideoIndex[nCh] =0;
-		}
+	if (slot >= 0) {
+		spin_lock_irqsave(&pdx->videoslock[nCh], flags);
+		vi->pStatusInfo[slot].byLock = MEM_UNLOCK;
+		spin_unlock_irqrestore(&pdx->videoslock[nCh], flags);
 	}
-	spin_unlock_irqrestore(&pdx->videoslock[nCh], devflags);
-	return;
 }
 static void hws_get_video_param(struct hws_pcie_dev *dev,int index)
 {
@@ -4679,7 +4626,7 @@ static int  StartAudioCapture(struct hws_pcie_dev *pdx,int index)
 static int StartVideoCapture(struct hws_pcie_dev *pdx,int index)
 {
 	int j;
-	//unsigned long flags;
+	unsigned long flags;
 	if(pdx->m_bVCapStarted[index]==1)
 	{
 
@@ -4702,6 +4649,17 @@ static int StartVideoCapture(struct hws_pcie_dev *pdx,int index)
 	}
 	//spin_unlock_irqrestore(&pdx->videoslock[index], flags);
 	//pdx->m_nVideoIndex[index] =0;
+	/*
+	 * Frames left READY by an earlier session would otherwise be delivered
+	 * as the newest frame. A slot still being read is freed by the worker.
+	 */
+	spin_lock_irqsave(&pdx->videoslock[index], flags);
+	for (j = 0; j<MAX_VIDEO_QUEUE; j++)
+	{
+		if(pdx->m_VideoInfo[index].pStatusInfo[j].byLock == MEM_LOCK)
+			pdx->m_VideoInfo[index].pStatusInfo[j].byLock = MEM_UNLOCK;
+	}
+	spin_unlock_irqrestore(&pdx->videoslock[index], flags);
 	pdx->m_VideoInfo[index].dwisRuning = 1;
 	pdx->m_VideoInfo[index].m_nVideoIndex =0;
 	pdx->m_nRDVideoIndex[index]=0;
@@ -4878,32 +4836,31 @@ static int MemCopyVideoToSteam(struct hws_pcie_dev *pdx,int nDecoder)
 		//--------------
 		if(mVideoBufIndex== 1)
 		{
-			if(pdx->m_VideoInfo[nDecoder].pStatusInfo[pdx->m_VideoInfo[nDecoder].m_nVideoIndex].byLock== MEM_UNLOCK)
-
+			/*
+			 * First half: claim the write slot. Never write a slot the
+			 * worker is copying from (at most one is); a complete
+			 * frame nobody read yet is overwritten and counted as a drop.
+			 */
+			spin_lock_irqsave(&pdx->videoslock[nDecoder], flags);
+			nIndex = pdx->m_VideoInfo[nDecoder].m_nVideoIndex;
+			if(pdx->m_VideoInfo[nDecoder].pStatusInfo[nIndex].byLock == MEM_READING)
 			{
-				nIndex = pdx->m_VideoInfo[nDecoder].m_nVideoIndex;
-				bBuf =	pdx->m_VideoInfo[nDecoder].m_pVideoBufData[nIndex];
-				bBuf1 = pdx->m_VideoInfo[nDecoder].m_pVideoBufData1[nIndex];
-
+				nIndex = (nIndex + 1) % MAX_VIDEO_QUEUE;
+				pdx->m_VideoInfo[nDecoder].m_nVideoIndex = nIndex;
 			}
+			if(pdx->m_VideoInfo[nDecoder].pStatusInfo[nIndex].byLock == MEM_LOCK)
+				pdx->m_FramesDropped[nDecoder]++;
+			pdx->m_VideoInfo[nDecoder].pStatusInfo[nIndex].byLock = MEM_UNLOCK;
+			spin_unlock_irqrestore(&pdx->videoslock[nDecoder], flags);
+			bBuf =	pdx->m_VideoInfo[nDecoder].m_pVideoBufData[nIndex];
+			bBuf1 = pdx->m_VideoInfo[nDecoder].m_pVideoBufData1[nIndex];
 		}
 		else
 		{
+			/* second half: same slot, still FREE, so the worker leaves it alone */
 			nIndex = pdx->m_VideoInfo[nDecoder].m_nVideoIndex;
 			bBuf =  pdx->m_VideoInfo[nDecoder].m_pVideoBufData2[nIndex];
 			bBuf1 = pdx->m_VideoInfo[nDecoder].m_pVideoBufData3[nIndex];
-
-		}
-		if(nIndex== -1)
-		{
-
-			//if(pdx->m_VideoInfo[nDecoder].pStatusInfo[video_index][pdx->m_VideoInfo[nDecoder].m_nVideoIndex[video_index]].byField== 0)
-			//{
-			pdx->m_VideoInfo[nDecoder].pStatusInfo[pdx->m_VideoInfo[nDecoder].m_nVideoIndex].byLock= MEM_UNLOCK;
-			nIndex = pdx->m_VideoInfo[nDecoder].m_nVideoIndex;
-			bBuf =  pdx->m_VideoInfo[nDecoder].m_pVideoBufData[nIndex];
-			bBuf1 = pdx->m_VideoInfo[nDecoder].m_pVideoBufData1[nIndex];
-			//}
 		}
 
 		//-------------------
@@ -4922,8 +4879,8 @@ static int MemCopyVideoToSteam(struct hws_pcie_dev *pdx,int nDecoder)
 				{
 					pdx->m_VideoInfo[nDecoder].m_nVideoIndex =0;
 				}
-				pdx->m_VideoInfo[nDecoder].m_VideoBufferSize[2] = copysize;
-				pdx->m_VideoInfo[nDecoder].m_VideoBufferSize[3] = copysize1;
+				pdx->m_VideoInfo[nDecoder].pStatusInfo[nIndex].dwSize[2] = copysize;
+				pdx->m_VideoInfo[nDecoder].pStatusInfo[nIndex].dwSize[3] = copysize1;
 				pdx->m_VideoInfo[nDecoder].pStatusInfo[nIndex].dwWidth = pdx->m_pVCAPStatus[nDecoder][0].dwWidth ;
 				pdx->m_VideoInfo[nDecoder].pStatusInfo[nIndex].dwHeight = pdx->m_pVCAPStatus[nDecoder][0].dwHeight;
 				pdx->m_VideoInfo[nDecoder].pStatusInfo[nIndex].dwinterlace = interlace;
@@ -4935,8 +4892,8 @@ static int MemCopyVideoToSteam(struct hws_pcie_dev *pdx,int nDecoder)
 			}
 			else
 			{
-				pdx->m_VideoInfo[nDecoder].m_VideoBufferSize[0] = copysize;
-				pdx->m_VideoInfo[nDecoder].m_VideoBufferSize[1] = copysize1;
+				pdx->m_VideoInfo[nDecoder].pStatusInfo[nIndex].dwSize[0] = copysize;
+				pdx->m_VideoInfo[nDecoder].pStatusInfo[nIndex].dwSize[1] = copysize1;
 				pdx->m_nVideoHalfDone[nDecoder] = 1;
 
 			}

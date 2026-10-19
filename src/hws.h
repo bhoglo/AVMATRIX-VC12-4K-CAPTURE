@@ -110,8 +110,10 @@
 #define TRUE 1
 #define FALSE 0
 #endif 
-#define MEM_LOCK					1
-#define MEM_UNLOCK					0
+/* frame-queue slot states (VCAP_STATUS_INFO.byLock), changed under videoslock */
+#define MEM_LOCK					1	/* READY: a complete frame nobody has read */
+#define MEM_UNLOCK					0	/* FREE: the tasklet may write it */
+#define MEM_READING					2	/* the worker is copying from it */
 
 
 typedef unsigned int DWORD;
@@ -198,6 +200,7 @@ typedef struct TAG_VCAP_STATUS_INFO
 	DWORD       dwWidth; 
 	DWORD       dwHeight;
 	DWORD	    dwinterlace;
+	DWORD       dwSize[4];	/* bytes in each quarter buffer */
 	u64         tsNs;	/* CLOCK_MONOTONIC at the frame-end interrupt */
 	u32         seq;	/* per-channel frame number */
 }VCAP_STATUS_INFO, *PVCAP_STATUS_INFO;
@@ -207,7 +210,6 @@ typedef struct
 	uint8_t		*m_pVideoBufData1[MAX_VIDEO_QUEUE];
 	uint8_t		*m_pVideoBufData2[MAX_VIDEO_QUEUE];
 	uint8_t		*m_pVideoBufData3[MAX_VIDEO_QUEUE];
-	int         m_VideoBufferSize[4];
 	VCAP_STATUS_INFO pStatusInfo[MAX_VIDEO_QUEUE];
 	DWORD        m_nVideoIndex;
 	BYTE		*m_pVideoScalerBuf;
@@ -456,6 +458,7 @@ struct hws_pcie_dev {
 	int       m_nVideoHalfDone[MAX_VID_CHANNELS];
 	u64       m_FrameEndNs[MAX_VID_CHANNELS];	/* set by irqhandler at the frame-end half */
 	u32       m_FrameSeq[MAX_VID_CHANNELS];	/* next frame number, under videoslock */
+	u32       m_FramesDropped[MAX_VID_CHANNELS];	/* READY frames overwritten or skipped */
 	uint8_t	  m_dwAudioField[MAX_VID_CHANNELS];
 	uint8_t   m_nAudioBusy[MAX_VID_CHANNELS];
 	uint8_t   m_nAudioBufferIndex[MAX_VID_CHANNELS];
