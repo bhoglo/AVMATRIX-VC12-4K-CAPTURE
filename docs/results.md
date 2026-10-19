@@ -152,3 +152,18 @@ A 15-minute OBS session at 3840×2160 with console audio, two quick OBS restarts
 | Canary in each DMA buffer's gap | Untouched in all four buffers, including buffer 2 around 0xfec00000. This build refilled it at every capture start, so it covered only the last OBS start and stop; `df0a168` keeps it across starts. |
 | debugfs status | 0 half-queue overflows; 1 lost frame (a bottom half without its top half at a capture start) |
 | Measured rate | 16.667 ms on a fresh capture. The value left after the last short OBS session read 17.8 ms; it is only updated while capturing. |
+
+### Operator session 2 (driver `df0a168`, srcversion `47AF3E12696B71724ED6FB9`)
+
+Three OBS starts and stops, then a suspend with OBS capturing (11:35:53–11:36:14).
+
+| Check | Result |
+|---|---|
+| Suspend with capture running | The picture came back by itself after the wake (operator); `resumed, card re-initialised` |
+| Console audio, Switch 2 menu clicks | Sound right, clicks on time (operator); PipeWire ERR 1 on the console-audio loopback |
+| OBS picture | Fills the 4K canvas (operator) |
+| `IO_PAGE_FAULT` | 0 |
+| Frames | 5498, lost 2; the consumer had no buffer queued for 16 |
+| Canary | Buffers 0–2 untouched. **Buffer 3: 2 KiB written at offset 0x440000–0x4407ff (IOVA 0xfe440000–0xfe4407ff)**, beyond the 4K quarter (0x3f5000) and before the audio ring. 0x440000 is register 9 (0x44000) × 16. |
+
+The canary covered the whole boot, so the write could come from any of the starts, stops, the suspend or normal streaming. `bf69f64` logs each hit with its context.
