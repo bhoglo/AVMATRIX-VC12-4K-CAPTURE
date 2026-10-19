@@ -5280,6 +5280,7 @@ int MainKsThreadHandle(void *arg)
 {
 	int need_check=0;
 	int i=0;
+	unsigned int poll = 0;
 	struct hws_pcie_dev *pdx = (struct hws_pcie_dev *)(arg);
 	while(!kthread_should_stop())
 	{
@@ -5309,16 +5310,22 @@ int MainKsThreadHandle(void *arg)
 					 hdcp ? "active, delivering black frames" : "no longer active");
 			}
 		}
-		mutex_lock(&pdx->video[0].cap_lock);	/* start_streaming can refill it */
-		hws_check_canary(pdx);
-		mutex_unlock(&pdx->video[0].cap_lock);
+		if (poll++ % 5 == 0) {	/* the scan reads about 2 MB: every 250 ms is enough */
+			mutex_lock(&pdx->video[0].cap_lock);	/* start_streaming can refill it */
+			hws_check_canary(pdx);
+			mutex_unlock(&pdx->video[0].cap_lock);
+		}
 		/*
 		 * TASK_IDLE: ssleep() slept uninterruptibly, which counts toward
 		 * the load average and kept it 1.0 higher for as long as the
 		 * module was loaded. kthread_stop() still wakes this early.
-		 * Every 250 ms so resolution changes are noticed quickly.
+		 * Every 50 ms, as the Windows driver polls: resolution changes
+		 * are seen sooner, and with no signal the blue frames come
+		 * faster than OBS's read timeout (5 frame periods, 83 ms at
+		 * 60 fps), which it otherwise hit repeatedly at every signal
+		 * change. Each poll is a few register reads.
 		 */
-		schedule_timeout_idle(HZ / 4);
+		schedule_timeout_idle(max_t(long, 1, msecs_to_jiffies(50)));
 	}
 	//printk("MainKsThreadHandle Exit");
 	return 0;
