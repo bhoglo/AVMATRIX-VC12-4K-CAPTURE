@@ -121,3 +121,23 @@ Registers documented by the mainline `hws` driver (drivers/media/pci/hws/hws_reg
 | 25, 26 | buffer base / per-channel DMA address (zero-copy doorbell in mainline) | 0, 0 (unused by this driver) |
 | 110 | input frame rate | 60 (integer fps) |
 | 120, 130 | programmed output size and rate | 1920×1080, 60 (never written by this driver; frames still arrive at 3840×2160) |
+
+## Stage 3: `rework/single-copy`
+
+Driver `fa5b301`, module srcversion `E3F8F6E0072AD04809ACE89`, after a reboot on 2026-10-19 with no other app using the card. dmesg: `DMA buffers: 4 x 4608 KiB, input up to 4096x2160`, no warnings, 0 `IO_PAGE_FAULT`.
+
+| Check | Result |
+|---|---|
+| Frame delivery (`run-baseline.sh`) | 60.00 fps in all three runs, every frame unique, no sequence gaps or bursts; 4K native delta stdev 0.00 ms |
+| `v4l2-compliance` (no `-s`) | 47 / 48; only the by-design `reqbufs != EBUSY` |
+| Two 4K streams at once | Each 60.00 fps, 300 / 300 unique, no gaps; both consumers got the same frames |
+| `S_FMT` from a third process during both | `Device or resource busy` |
+| 200 open/stream/close cycles (1–4 buffers, 1–5 frames) beside a 2400-frame 4K stream | 200 / 200 succeeded; the long stream held 60.00 fps with no gaps; 0 frames lost; no kernel warnings |
+| `S_PARM` 30 | 30.00 fps, deltas 33.33 ms |
+| IRQ thread CPU, 600 frames | 4K native: 300 ms (0.5 ms per frame). 4K input scaled to 1080p: 730 ms (1.2 ms per frame). Before: about 1.3 ms in the tasklet plus 1.3–1.9 ms per buffer in the worker, partly with interrupts off. |
+| IRQ thread | `irq/202-0000:0b`, SCHED_FIFO 50, on CPU 4 (follows the IRQ affinity) |
+| Status thread, IOMMU faults | `I` state; 0 faults |
+
+debugfs `dma`: every video address register reaches its own buffer. Buffer 2 spans IOVA 0xfe800000–0xfec7ffff, so 0xfec00000, where the stray writes faulted before stage 1, is now inside it, in the unused gap past the 4K quarter. The faults may have stopped only because that address became mapped. `8a67155` adds a canary in each buffer's gap to show whether the card still writes there.
+
+An OBS start before the console's signal had locked opened at the 1920×1080 default and kept it once the 4K signal arrived, scaled to 1080p and drawn as a quarter of the 4K canvas. Reopening the source fixes it; H.3 automates that.
