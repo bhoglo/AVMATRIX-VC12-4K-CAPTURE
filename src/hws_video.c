@@ -758,13 +758,16 @@ static int hws_ctrls_init(struct hws_video *videodev)
 {
 	struct v4l2_ctrl_handler *hdl = &videodev->ctrl_hdl;
 
-	v4l2_ctrl_handler_init(hdl, 3);
+	v4l2_ctrl_handler_init(hdl, 4);
 	videodev->ctrl_brightness = v4l2_ctrl_new_std(hdl, &hws_ctrl_ops, V4L2_CID_BRIGHTNESS,
 		MIN_VAMP_BRIGHTNESS_UNITS, MAX_VAMP_BRIGHTNESS_UNITS, 1, BrightnessDefault);
 	videodev->ctrl_contrast = v4l2_ctrl_new_std(hdl, &hws_ctrl_ops, V4L2_CID_CONTRAST,
 		MIN_VAMP_CONTRAST_UNITS, MAX_VAMP_CONTRAST_UNITS, 1, ContrastDefault);
 	videodev->ctrl_saturation = v4l2_ctrl_new_std(hdl, &hws_ctrl_ops, V4L2_CID_SATURATION,
 		MIN_VAMP_SATURATION_UNITS, MAX_VAMP_SATURATION_UNITS, 1, SaturationDefault);
+	/* HDMI input present, kept current by the status thread */
+	videodev->ctrl_power = v4l2_ctrl_new_std(hdl, NULL, V4L2_CID_DV_RX_POWER_PRESENT,
+						 0, 1, 0, videodev->src_signal);
 	if (hdl->error) {
 		int err = hdl->error;
 		v4l2_ctrl_handler_free(hdl);
@@ -1036,6 +1039,7 @@ static void hws_check_source_change(struct hws_video *videodev)
 	videodev->src_h = h;
 	videodev->src_il = il;
 	videodev->dv_timings.bt.width = 0;	/* G_DV_TIMINGS re-queries */
+	v4l2_ctrl_s_ctrl(videodev->ctrl_power, sig);
 	v4l2_event_queue(&videodev->vdev, &ev);
 }
 

@@ -348,6 +348,7 @@ struct hws_video{
 	struct v4l2_ctrl *ctrl_brightness;	/* cluster: brightness, contrast, saturation */
 	struct v4l2_ctrl *ctrl_contrast;
 	struct v4l2_ctrl *ctrl_saturation;
+	struct v4l2_ctrl *ctrl_power;		/* V4L2_CID_DV_RX_POWER_PRESENT, read-only */
 	u32 m_PictureReg;	/* last value written to the picture register, 0 = never */
 	struct v4l2_dv_timings dv_timings;	/* G/S_DV_TIMINGS */
 	/* last input state seen by the status thread, for source-change events */
