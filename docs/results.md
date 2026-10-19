@@ -276,3 +276,16 @@ OBS open; the console switched 4K to 1080p and back, then went into rest mode an
 | Status dumps | 25 `LOG_STATUS` calls from OBS; the driver printed its part about twice (2 s rate limit). The core's two-line START/END banner still appears per call. Before: 293 full dumps. |
 | Why the bursts remain | During them the card still reported the signal present with the old timings (Power Present 1), so no no-signal frames were sent; it just delivered no frames for about a second while the console renegotiated. The faster poll can't help there. A watchdog sending blue frames would replace OBS's held last frame with a blue flash, so it was not added. |
 | Frames, faults | 7372 frames, 2 lost; canary hits only at the changes, all inside the buffers; 0 `IO_PAGE_FAULT` |
+
+### 4.8: 120 Hz from the PS5 (driver `2ef336a`)
+
+PS5 with 120 Hz Output on Automatic, running Hogwarts Legacy with its 120 Hz option and a high-frame-rate mode. The PS5 switched its output to 1920×1080 at 119.88 Hz (this EDID offers no 1440p120 or 4K120). OBS canvas set to 120 fps.
+
+| Check | Result |
+|---|---|
+| Input | `--query-dv-timings` 1920×1080p, 248.58 MHz, 119.88 fps; measured 8.342 ms; register 110 reads 120 |
+| OBS source still at 3840×2160 (opened at 4K60) | 120 fps delivered, the driver upscaling each 1080p frame on the CPU: IRQ thread 530 ms CPU per 5 s (0.88 ms per frame) |
+| OBS source reopened (properties → OK) | OBS log: "Resolution: 1920x1080, Framerate: 120.00 fps". 602 frames in 5 s (120 fps), none missed; IRQ thread 80 ms CPU per 5 s (0.13 ms per frame) |
+| Lost frames | 3 this boot, at mode switches |
+
+OBS's DV Timing list stops at 60 Hz because the kernel's standard timings (`v4l2_dv_timings_presets`) go no higher at 1080p and have no 1440p; "Leave Unchanged" uses the live timings, which is what OBS needs. After the console changes mode, reopen the source so it captures at the new native size.
