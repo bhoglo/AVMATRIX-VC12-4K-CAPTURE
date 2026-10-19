@@ -5796,7 +5796,7 @@ int MainKsThreadHandle(void *arg)
 	int need_check=0;
 	int i=0;
 	struct hws_pcie_dev *pdx = (struct hws_pcie_dev *)(arg);
-	while(1)
+	while(!kthread_should_stop())
 	{
 
 		need_check=0;
@@ -5812,12 +5812,12 @@ int MainKsThreadHandle(void *arg)
 		{
 			CheckVideFmt(pdx);
 		}
-		ssleep(1);
-		if(kthread_should_stop())
-		{
-			break;
-		}
-
+		/*
+		 * TASK_IDLE: ssleep() slept uninterruptibly, which counts toward
+		 * the load average and kept it 1.0 higher for as long as the
+		 * module was loaded. kthread_stop() still wakes this early.
+		 */
+		schedule_timeout_idle(HZ);
 	}
 	//printk("MainKsThreadHandle Exit");
 	return 0;
