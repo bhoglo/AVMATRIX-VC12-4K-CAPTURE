@@ -31,6 +31,7 @@ struct hwsvideo_buffer;
 static void hws_complete_buffer(struct hwsvideo_buffer *buf, enum vb2_buffer_state state);
 static void hws_snap_regs(struct hws_pcie_dev *pdx, char what, int en);
 static void hws_fill_canary(struct hws_pcie_dev *pdx);
+static void hws_check_canary(struct hws_pcie_dev *pdx);
 static bool hws_input_timeperframe(struct hws_pcie_dev *pdx, int ch, struct v4l2_fract *tpf);
 static void WRITE_REGISTER_ULONG(struct hws_pcie_dev *pdx,u32 RegisterOffset,u32 Value);
 static u32 READ_REGISTER_ULONG(struct hws_pcie_dev *pdx,u32 RegisterOffset);
@@ -4426,8 +4427,9 @@ static int  StartAudioCapture(struct hws_pcie_dev *pdx,int index)
  * Fill the unused gap of each DMA buffer, between its quarter and the audio
  * ring, with a known pattern; debugfs dma reports bytes the card changed
  * there. The card should never write it, so changes are stray or oversized
- * DMA writes (stage 3.5). Filled once, and again only when the input size
- * moves the gap, so it accumulates over every capture start and stop.
+ * DMA writes (stage 3.5). Filled at probe and again when the input size
+ * moves the gap; the status thread checks it every poll (hws_check_canary),
+ * logs each write and re-arms. Only probe and the status thread touch it.
  */
 #define HWS_CANARY 0xC0FFEE11u
 static void hws_fill_canary(struct hws_pcie_dev *pdx)
@@ -4444,6 +4446,51 @@ static void hws_fill_canary(struct hws_pcie_dev *pdx)
 			continue;	/* same gap: keep what earlier captures left, to cover many start/stop cycles */
 		memset32((u32 *)(pdx->m_pbyVideoBuffer[i] + start), HWS_CANARY, (end - start) / 4);
 		pdx->canary_start[i] = start;
+	}
+}
+
+/*
+ * Status thread, every poll: log any canary words the card overwrote, with
+ * enough context to tell when it happens, then re-arm them.
+ */
+static void hws_check_canary(struct hws_pcie_dev *pdx)
+{
+	int i, k, words, lo, hi, end = pdx->m_MaxHWVideoBufferSize - MAX_AUDIO_CAP_SIZE;
+	struct hws_regsnap last = { 0 };
+	unsigned long flags;
+	u32 *c;
+
+	for (i = 0; i < pdx->m_nMaxChl && i < MAX_VID_CHANNELS; i++) {
+		if (!pdx->canary_start[i])
+			continue;
+		c = (u32 *)(pdx->m_pbyVideoBuffer[i] + pdx->canary_start[i]);
+		words = (end - pdx->canary_start[i]) / 4;
+		lo = -1;
+		hi = -1;
+		for (k = 0; k < words; k++) {
+			if (READ_ONCE(c[k]) != HWS_CANARY) {
+				if (lo < 0)
+					lo = k;
+				hi = k;
+			}
+		}
+		if (lo < 0)
+			continue;
+		pdx->canary_hits[i]++;
+		pdx->canary_last_lo[i] = (u64)pdx->m_pbyVideo_phys[i] + pdx->canary_start[i] + lo * 4;
+		pdx->canary_last_hi[i] = (u64)pdx->m_pbyVideo_phys[i] + pdx->canary_start[i] + hi * 4 + 3;
+		spin_lock_irqsave(&pdx->snap_lock, flags);
+		if (pdx->snap_next)
+			last = pdx->snaps[(pdx->snap_next - 1) % HWS_REGSNAPS];
+		spin_unlock_irqrestore(&pdx->snap_lock, flags);
+		dev_info_ratelimited(&pdx->pdev->dev,
+			"stray DMA write #%u: buffer %d, offset %#x-%#x (IOVA %llx-%llx); video %s, audio %s, frame %u; %llu ms after %s %s\n",
+			pdx->canary_hits[i], i, pdx->canary_start[i] + lo * 4, pdx->canary_start[i] + hi * 4 + 3,
+			pdx->canary_last_lo[i], pdx->canary_last_hi[i],
+			pdx->m_bVCapStarted[0] ? "on" : "off", pdx->m_bACapStarted[0] ? "on" : "off",
+			pdx->m_FrameSeq[0], last.ts ? div_u64(ktime_get_ns() - last.ts, NSEC_PER_MSEC) : 0,
+			last.what == 'A' ? "audio" : "video", last.en ? "enable" : "disable");
+		memset32(c + lo, HWS_CANARY, hi - lo + 1);
 	}
 }
 
@@ -4464,7 +4511,6 @@ static int StartVideoCapture(struct hws_pcie_dev *pdx,int index)
 	//--------------------
 	pdx->m_VideoInfo[index].dwisRuning = 1;
 	pdx->video_toggle[index] = 0;	/* the first event is then a top half */
-	hws_fill_canary(pdx);
 	EnableVideoCapture(pdx,index,1);
 	return 0;
 }
@@ -5181,6 +5227,7 @@ int MainKsThreadHandle(void *arg)
 			if(pdx->video[i].fileindex > 0)
 				hws_check_source_change(&pdx->video[i]);
 		}
+		hws_check_canary(pdx);
 		/*
 		 * TASK_IDLE: ssleep() slept uninterruptibly, which counts toward
 		 * the load average and kept it 1.0 higher for as long as the
@@ -5596,6 +5643,9 @@ static int hws_dbg_dma_show(struct seq_file *m, void *unused)
 					hi_k = k;
 				}
 			}
+			if (pdx->canary_hits[i])
+				seq_printf(m, "  stray writes caught: %u, last at IOVA %llx-%llx\n", pdx->canary_hits[i],
+					   pdx->canary_last_lo[i], pdx->canary_last_hi[i]);
 			if (!changed)
 				seq_printf(m, "  gap %#x-%#x: untouched\n", pdx->canary_start[i],
 					   pdx->m_MaxHWVideoBufferSize - MAX_AUDIO_CAP_SIZE);
@@ -5721,6 +5771,7 @@ static int hws_probe(struct pci_dev *pdev, const struct pci_device_id *pci_id)
 		goto err_dma;
 	}
 	InitVideoSys(gdev,0);
+	hws_fill_canary(gdev);
 	ret = StartKSThread(gdev);
 	if (ret)
 		goto err_irq;

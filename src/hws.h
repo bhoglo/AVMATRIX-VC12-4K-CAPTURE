@@ -429,6 +429,8 @@ struct hws_pcie_dev {
 	struct hws_regsnap snaps[HWS_REGSNAPS];
 	u32 snap_next;
 	u32 canary_start[MAX_VID_CHANNELS];	/* first canary byte in each DMA buffer, 0 = none */
+	u32 canary_hits[MAX_VID_CHANNELS];	/* stray writes found by the status thread */
+	u64 canary_last_lo[MAX_VID_CHANNELS], canary_last_hi[MAX_VID_CHANNELS];	/* IOVA range of the last */
  	unsigned long audio_data[MAX_VID_CHANNELS];
  	struct tasklet_struct dpc_audio_tasklet[MAX_VID_CHANNELS];
 	//-----------------------------
