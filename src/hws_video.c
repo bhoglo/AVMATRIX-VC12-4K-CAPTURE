@@ -6057,11 +6057,71 @@ return	-1;
 
 MODULE_DEVICE_TABLE(pci, hws_pci_table);
 
+/*
+ * System sleep. The card loses its registers in S3 (run state, DMA address
+ * table, buffer addresses and lengths), and re-running InitVideoSys() alone
+ * does not bring it back, so resume replays the probe-time reset (ReadChipId)
+ * and init before restarting whatever was capturing. The PCI core saves and
+ * restores config space (BARs, bus mastering, MSI) around these callbacks.
+ */
+static int hws_suspend(struct device *d)
+{
+	struct hws_pcie_dev *pdx = dev_get_drvdata(d);
+	int i;
+
+	for (i = 0; i < pdx->m_nCurreMaxVideoChl; i++) {
+		pdx->m_ResumeVideo[i] = pdx->m_bVCapStarted[i];
+		pdx->m_ResumeAudio[i] = pdx->m_bACapStarted[i];
+		if (pdx->m_bVCapStarted[i])
+			EnableVideoCapture(pdx, i, 0);
+		if (pdx->m_bACapStarted[i])
+			EnableAudioCapture(pdx, i, 0);
+	}
+	if (pdx->wq)
+		flush_workqueue(pdx->wq);
+	if (pdx->auwq)
+		flush_workqueue(pdx->auwq);
+	return 0;
+}
+
+static int hws_resume(struct device *d)
+{
+	struct hws_pcie_dev *pdx = dev_get_drvdata(d);
+	int i;
+
+	WRITE_REGISTER_ULONG(pdx, CVBS_IN_BASE, 0x0);
+	WRITE_REGISTER_ULONG(pdx, CVBS_IN_BASE, 0x10);
+	pdx->m_bStartRun = 0;
+	InitVideoSys(pdx, 0);
+	for (i = 0; i < pdx->m_nCurreMaxVideoChl; i++) {
+		pdx->m_FrameEndNs[i] = 0;	/* restart the frame-rate window */
+		if (pdx->m_ResumeVideo[i]) {
+			pdx->m_bVCapStarted[i] = 0;
+			StartVideoCapture(pdx, i);
+		}
+		if (pdx->m_ResumeAudio[i]) {
+			pdx->m_bACapStarted[i] = 0;
+			StartAudioCapture(pdx, i);
+		}
+	}
+	dev_info(d, "resumed, card re-initialised\n");
+	return 0;
+}
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,17,0)
+static DEFINE_SIMPLE_DEV_PM_OPS(hws_pm_ops, hws_suspend, hws_resume);
+#define HWS_PM_OPS pm_sleep_ptr(&hws_pm_ops)
+#else
+static SIMPLE_DEV_PM_OPS(hws_pm_ops, hws_suspend, hws_resume);
+#define HWS_PM_OPS (&hws_pm_ops)
+#endif
+
 static struct pci_driver hws_pci_driver = {
 	.name        = KBUILD_MODNAME,
 	.id_table    = hws_pci_table,
 	.probe       = hws_probe,
 	.remove      = hws_remove,
+	.driver.pm   = HWS_PM_OPS,
 };
 
 static __init int pcie_hws_init(void)
