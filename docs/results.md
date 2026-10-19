@@ -190,3 +190,27 @@ OBS started after boot, then the Switch 2 was switched to 1080p and back to 4K w
 | Frames | 3724, lost 2 (at the switches), no buffer missing for the consumer |
 
 So the card's over-long runs end at register 9 × 16 + 2 KiB, and with register 9 set they stay inside the buffer at every resolution change, also with the 4 MiB fallback buffers (limit 0x3fd000 + 2 KiB, below the audio ring).
+
+## Stage 4.8: input mode survey with a PC source
+
+Driver `7df0340` (DKMS `1.0.0.230324.3.0`). The PC's GPU (AMD, HDMI-A-2) drove the card's input; each mode was set with `kscreen-doctor` and captured at its native size, 4 MMAP buffers, for about 2 s. The desktop on that output was mostly static, so only timing and sequence numbers matter here. 2026-10-19.
+
+| GPU mode | Driver input | Delivered fps | Delta median / stdev (ms) | Sequence gaps |
+|---|---|---|---|---|
+| 1920×1080 @ 239.96 | 1920×1080 | **239.96** | 4.17 / 0.00 | 0 |
+| 2560×1440 @ 144.01 | 2560×1440 | **144.00** | 6.94 / 0.00 | 0 |
+| 1920×1080 @ 120.00 | 1920×1080 | **120.00** | 8.33 / 0.00 | 0 |
+| 1920×1080 @ 119.88 | 1920×1080 | **119.88** | 8.34 / 0.00 | 0 |
+| 3840×2160 @ 60 | 3840×2160 | 60.00 | 16.67 / 0.00 | 0 |
+| 3840×2160 @ 50 | 3840×2160 | 50.00 | 20.00 / 0.26 | 0 |
+| 3840×2160 @ 30 | 3840×2160 | 30.01 | 33.33 / 0.28 | 0 |
+| 2560×1440 @ 59.95 | 2560×1440 | 59.95 | 16.68 / 0.22 | 0 |
+| 2560×1080 @ 60 | 2560×1080 | 60.00 | 16.67 / 0.08 | 0 |
+| 1920×1080 @ 60 | 1920×1080 | 60.00 | 16.67 / 0.21 | 0 |
+| 1280×720 @ 60 | 1280×720 | 60.00 | 16.67 / 0.16 | 0 |
+| 4096×2160 @ 60 | **3840×2160** | — | — | — |
+
+- **High refresh rates already work.** Capture at 120, 144 and 240 fps needs no driver change.
+- **4096×2160 is scaled by the card.** With the GPU sending 4096×2160p60 (594 MHz, h-total 4400), register 90 reads 3840×2160 and register 110 reads 61. A captured frame shows the whole desktop scaled to 3840 wide and letterboxed (black bars about 67 px top and bottom, matching 3840×2025). The scaling happens before the FPGA, presumably in the GSV2011. The driver never sees 4096-wide frames from this card.
+- **DV timings go stale after a mode change.** With no stream running, `QUERY_DV_TIMINGS` reported each new mode with the previous mode's frame rate (for example 2560×1440 as "30.00 fps", 110.6 MHz synthesized). The measured rate only updates while capturing. Stage 4.2 fixes this.
+- **Stray DMA.** The only canary hits were at the moment the cable was switched from the console to the PC with OBS capturing (12:35:20). Both were inside the buffers: the end of a 4K quarter in buffer 0, and a run in buffer 3 that stopped at the register 9 limit. 0 `IO_PAGE_FAULT`.
