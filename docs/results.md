@@ -265,3 +265,14 @@ Driver `96dd3f1`, OBS closed, a 2700-frame 3840×2160 capture running as the obs
 | 130 = 30 | yes | unchanged | unchanged | 121 halves/s before and during, 120 after restore (60 fps) |
 
 The observing capture completed all 2700 frames, 3 lost; no canary hits, 0 `IO_PAGE_FAULT`. Register 120 also holds 1920×1080 from reset while the input arrives at 4K across every signal re-lock. **On this card (FPGA 122) registers 120 and 130 are storage with no observable effect**; the card's own scaling (4096×2160 to 3840×2160) is not controlled from the host. The driver keeps its CPU scaler.
+
+### 4.9: 50 ms poll and the LOG_STATUS rate limit (driver `2ef336a`, srcversion `DD6C962F9203FA1AE6011BA`)
+
+OBS open; the console switched 4K to 1080p and back, then went into rest mode and woke.
+
+| Check | Result |
+|---|---|
+| OBS "select timed out" | 25, in two bursts of about 12 (about 1 s each, 13:22:55 and 13:23:49–50); none at the other changes. Before: 31 in this kind of session. |
+| Status dumps | 25 `LOG_STATUS` calls from OBS; the driver printed its part about twice (2 s rate limit). The core's two-line START/END banner still appears per call. Before: 293 full dumps. |
+| Why the bursts remain | During them the card still reported the signal present with the old timings (Power Present 1), so no no-signal frames were sent; it just delivered no frames for about a second while the console renegotiated. The faster poll can't help there. A watchdog sending blue frames would replace OBS's held last frame with a blue flash, so it was not added. |
+| Frames, faults | 7372 frames, 2 lost; canary hits only at the changes, all inside the buffers; 0 `IO_PAGE_FAULT` |
