@@ -309,3 +309,5 @@ PS5 switched from 4K to 1080p and back, with OBS capturing and the console-direc
 | Normal running | No gap filled before the first switch (1025 card packets) |
 | By ear | No buzz at either switch |
 | Kernel log | No `IO_PAGE_FAULT`. The canary logs in-buffer over-long quarters at the size changes, ending at 0x47d7ff, as on every stage 4 boot (5–29 per boot). |
+
+With no HDMI source connected (operator check, 2026-10-19), the card's audio node delivers silence: nothing is audible, and there is no buzz.
