@@ -333,3 +333,22 @@ The probe build ran on branch `probe/zero-copy`; that code is debug-only and not
   - No `IO_PAGE_FAULT`, and no stray-DMA canary hit.
 
 So the card takes a new address for every frame and applies it to the next one. Zero-copy into app buffers can work on this card.
+
+## H.2: IRQ placement on the 9950X3D (driver `1f3e39a`)
+
+The PS5 sent 3840×2160p60 while OBS captured 3840×2160, so the IRQ thread copied about 1 GB/s. A pointer-chase benchmark ran one thread on each core of the V-cache CCD (CPUs 0–7), chasing a random cycle through a shared working set. Each configuration ran 15 s, three rounds alternating, with the card's IRQ pinned either to CPU 4 (V-cache CCD, where it booted) or to CPUs 8–15 and 24–31 (the other CCD). Without capture, the working set fits the 96 MiB V-cache up to about 80 MiB (684 M loads/s at 72 MiB, 323 M at 88 MiB).
+
+| Working set | IRQ on CPU 4: M loads/s per round | IRQ on the other CCD: M loads/s per round |
+|---|---|---|
+| 64 MiB | 697, 125, 531 (per-second spread up to ±312) | 784, 786, 785 (±5) |
+| 80 MiB | 649, 567, 579 | 718, 602, 685 |
+
+- **Effect:** at 64 MiB, the copy through the V-cache CCD cut throughput by a third on average, and once to DRAM speed. With the IRQ on the other CCD, throughput per thread matched the run without capture (98 M loads/s).
+- **The copy's own cost:** the IRQ thread used 0.80–0.89 s per 15 s on CPU 4 and 0.83–0.95 s on the other CCD.
+- **Default placement:** with the default mask (all CPUs), the kernel put the IRQ on CPU 4 at boot, and on CPU 25 when the mask was rewritten. Which CCD it lands on is chance.
+- **Caveat:** this is a worst case, a load that lives in the V-cache. Games gain less, by how much depends on the game.
+
+**`tools/irq-affinity install`:**
+- It pinned IRQ 202 to 8–15,24–31 and wrote a udev rule that reapplies the pin whenever the driver binds a device.
+- It added an irqbalance drop-in with `--banmod=HwsUHDX1Capture`. irqbalance's control socket then listed 121 balanced IRQs, including the neighbours 200, 201 and 205, but not 202.
+- With fake sysfs topologies the choice is: one L3 domain, no change; two equal domains (non-X3D or dual V-cache), no change; X3D, the smaller domain's CPUs.
