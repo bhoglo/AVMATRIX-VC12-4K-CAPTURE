@@ -352,3 +352,5 @@ The PS5 sent 3840×2160p60 while OBS captured 3840×2160, so the IRQ thread copi
 - It pinned IRQ 202 to 8–15,24–31 and wrote a udev rule that reapplies the pin whenever the driver binds a device.
 - It added an irqbalance drop-in with `--banmod=HwsUHDX1Capture`. irqbalance's control socket then listed 121 balanced IRQs, including the neighbours 200, 201 and 205, but not 202.
 - With fake sysfs topologies the choice is: one L3 domain, no change; two equal domains (non-X3D or dual V-cache), no change; X3D, the smaller domain's CPUs.
+
+After a reboot, the udev rule had pinned IRQ 202 to 8–15,24–31 at driver bind: the IRQ and its handler thread ran on CPU 9, and irqbalance started with `--banmod=HwsUHDX1Capture`. OBS captured normally.
