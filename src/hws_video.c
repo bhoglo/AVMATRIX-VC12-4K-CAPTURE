@@ -661,6 +661,8 @@ static int hws_open(struct file *file)
     spin_lock_init(&ctx->qlock);
     mutex_init(&ctx->qmutex);
     ctx->streaming = false;
+    atomic_set(&ctx->inflight, 0);
+    init_waitqueue_head(&ctx->inflight_wq);
 
     /* v4l2 file-handle */
     v4l2_fh_init(&ctx->fh, &videodev->vdev);
@@ -1843,6 +1845,13 @@ static void hws_stop_streaming_multi(struct vb2_queue *q)
         vb2_buffer_done(&buf->vb.vb2_buf, VB2_BUF_STATE_ERROR);
     }
     spin_unlock_irqrestore(&ctx->qlock, flags);
+
+    /*
+     * vb2 requires every buffer back before stop_streaming returns; it then
+     * frees the queue. A buffer the worker already popped is not on
+     * buf_queue, so wait for the worker to complete it.
+     */
+    wait_event(ctx->inflight_wq, atomic_read(&ctx->inflight) == 0);
 
     /* Stop engine when the last streamer goes away */
     mutex_lock(&videodev->engine_lock);
@@ -3563,6 +3572,7 @@ static struct hwsvideo_buffer *hws_pop_any_buffer(struct hws_video *videodev, st
         if (!list_empty(&ctx->buf_queue)) {
             buf = list_first_entry(&ctx->buf_queue, struct hwsvideo_buffer, queue);
             list_del(&buf->queue);
+            atomic_inc(&ctx->inflight);
             *out_ctx = ctx;
             spin_unlock_irqrestore(&ctx->qlock, qflags);
             break;
@@ -3573,6 +3583,15 @@ static struct hwsvideo_buffer *hws_pop_any_buffer(struct hws_video *videodev, st
 
     return buf;
 }
+/* Complete a buffer popped by hws_pop_any_buffer() and release its in-flight count. */
+static void hws_complete_buffer(struct hws_vfh_ctx *ctx, struct hwsvideo_buffer *buf,
+				enum vb2_buffer_state state)
+{
+	vb2_buffer_done(&buf->vb.vb2_buf, state);
+	if (atomic_dec_and_test(&ctx->inflight))
+		wake_up(&ctx->inflight_wq);
+}
+
 void video_data_process(struct work_struct *p_work)
 {
 	struct hws_video *videodev = container_of(p_work, struct hws_video, videowork);
@@ -3680,7 +3699,7 @@ void video_data_process(struct work_struct *p_work)
         buf->vb.field = V4L2_FIELD_NONE;
 
         if (!buf->mem || vb2_plane_size(&buf->vb.vb2_buf, 0) < out_size) {
-            vb2_buffer_done(&buf->vb.vb2_buf, VB2_BUF_STATE_ERROR);
+            hws_complete_buffer(ctx, buf, VB2_BUF_STATE_ERROR);
             continue;
         }
 		// copy data to buffer
@@ -3707,7 +3726,7 @@ void video_data_process(struct work_struct *p_work)
 		}
 		buf->vb.sequence = videodev->seqnr++;
         vb2_set_plane_payload(&buf->vb.vb2_buf, 0, out_size);
-        vb2_buffer_done(&buf->vb.vb2_buf, VB2_BUF_STATE_DONE);
+        hws_complete_buffer(ctx, buf, VB2_BUF_STATE_DONE);
 	}
 
 	vexit:
