@@ -289,3 +289,23 @@ PS5 with 120 Hz Output on Automatic, running Hogwarts Legacy with its 120 Hz opt
 | Lost frames | 3 this boot, at mode switches |
 
 OBS's DV Timing list stops at 60 Hz because the kernel's standard timings (`v4l2_dv_timings_presets`) go no higher at 1080p and have no 1440p; "Leave Unchanged" uses the live timings, which is what OBS needs. After the console changes mode, reopen the source so it captures at the new native size.
+
+### 4.10: buzz during console mode changes (driver `1f3e39a`, srcversion `3ADD58FAC28F00B5A49A027`)
+
+PS5 switched from 4K to 1080p and back, with OBS capturing and the console-direct loopback on. The card's PipeWire node was recorded with `pw-record`, and the driver's debugfs `status` was logged every ~30 ms. `tests/staleaudio.py` classified the audio.
+
+**Before (driver `12f8c36`):** each switch buzzed for 3.4–3.9 s.
+- **The buzz:** each sample matched the one 5120 frames earlier to within 5 LSB, slipping to 4864 about once a second: a loop of the last ~107 ms of audio.
+- **Timing:** it started about 1 s before the driver reported "no usable signal".
+- **Cause:** the debugfs counters show the card raised no audio interrupts (and no video) for the whole buzz, so the driver delivered nothing. The ALSA ring is 16384 frames, which doesn't match the loop. The replay comes from PipeWire re-delivering its last buffers while the ALSA pointer stands still.
+- **Rejected first fix:** a driver-side mute of repeating content never fired, because the driver never sees the loop.
+
+**After (silence fill):**
+
+| Check | Result |
+|---|---|
+| Switch to 1080p | 3.46 s of digital silence; no replay loop; debugfs: 1 gap, 165 silence packets |
+| Switch back to 4K | 4.01 s of digital silence; no replay loop; 2 gaps, 353 silence packets in total |
+| Normal running | No gap filled before the first switch (1025 card packets) |
+| By ear | No buzz at either switch |
+| Kernel log | No `IO_PAGE_FAULT`. The canary logs in-buffer over-long quarters at the size changes, ending at 0x47d7ff, as on every stage 4 boot (5–29 per boot). |
