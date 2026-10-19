@@ -29,6 +29,8 @@ static void StopVideoCapture(struct hws_pcie_dev *pdx,int index);
 static void InitVideoSys(struct hws_pcie_dev *pdx,int set);
 static bool hws_input_timeperframe(struct hws_pcie_dev *pdx, int ch, struct v4l2_fract *tpf);
 static void WRITE_REGISTER_ULONG(struct hws_pcie_dev *pdx,u32 RegisterOffset,u32 Value);
+static u32 READ_REGISTER_ULONG(struct hws_pcie_dev *pdx,u32 RegisterOffset);
+static bool hws_any_queue_busy(struct hws_video *videodev);
 
 //------------------------
 
@@ -205,6 +207,14 @@ static int  v4l2_model_get_support_framerate(int index)
 	return (framegrabber_support_refreshrate[index]);
 }
 
+static int v4l2_get_suport_VideoFormatIndex_wh(int w, int h)
+{
+	int index;
+	for(index=0; index<V4L2_MODEL_VIDEOFORMAT_NUM;index++)
+		if(w==support_videofmt[index].frame_size.width && h==support_videofmt[index].frame_size.height)
+			return index;
+	return -1;
+}
 static int v4l2_get_suport_VideoFormatIndex(struct v4l2_format *fmt)
 {
 	struct v4l2_pix_format *pix = &fmt->fmt.pix;
@@ -318,33 +328,34 @@ const framegrabber_pixfmt_t *framegrabber_g_out_pixelfmt(struct hws_video *dev)
 {
 	return &support_pixfmts[dev->current_out_pixfmt];
 }
-static int hws_vidioc_g_fmt_vid_cap(struct file *file, void *fh, struct v4l2_format *fmt)
+/*
+ * The input as the card sees it now, read straight from the status registers
+ * and clamped like Get_Video_Status(). Interlaced fields are line-doubled into
+ * frames, so the height reported is the delivered frame height. False when
+ * there is no signal or the size is unusable.
+ */
+static bool hws_read_input(struct hws_pcie_dev *pdx, int ch, int *w, int *h, int *interlace)
 {
-	struct hws_video *videodev = video_drvdata(file);
-	//struct v4l2_pix_format *pix = &fmt->fmt.pix;
-	const framegrabber_pixfmt_t *pixfmt;
-	v4l2_model_timing_t *p_SupportmodeTiming;
-	//printk( "%s(%d)\n", __func__,videodev->index);
-	//printk( "w=%d,h=%d\n",fmt->fmt.pix.width,fmt->fmt.pix.height);
-	pixfmt=framegrabber_g_out_pixelfmt(videodev);
-	if(pixfmt)
-	{
-		//framegrabber_g_Curr_input_framesize(videodev,&width,&height);
-		p_SupportmodeTiming = v4l2_model_get_support_videoformat(videodev->current_out_size_index);
-		if(p_SupportmodeTiming ==NULL) return -EINVAL;
-		fmt->fmt.pix.width=p_SupportmodeTiming->frame_size.width;
-		fmt->fmt.pix.height=p_SupportmodeTiming->frame_size.height;
-		fmt->fmt.pix.field=V4L2_FIELD_NONE; //Field
-		fmt->fmt.pix.pixelformat  = pixfmt->fourcc;
-		fmt->fmt.pix.bytesperline = (fmt->fmt.pix.width * pixfmt->depth) >> 3;
-		fmt->fmt.pix.sizeimage =	fmt->fmt.pix.height * fmt->fmt.pix.bytesperline;
-		fmt->fmt.pix.colorspace = V4L2_COLORSPACE_REC709;
-		//printk("%s....f->fmt.pix.width=%d.f->fmt.pix.height=%d.\n",__func__,fmt->fmt.pix.width,fmt->fmt.pix.height);
-		return 0;
-	}
+	u32 st, res;
 
-	return -EINVAL;
+	if (pdx->m_PciDeviceLost)
+		return false;
+	st = READ_REGISTER_ULONG(pdx, CVBS_IN_BASE + 5 * PCIE_BARADDROFSIZE);
+	if (st == 0xFFFFFFFF || !((st >> ch) & 1))
+		return false;
+	*interlace = (st >> (8 + ch)) & 1;
+	res = READ_REGISTER_ULONG(pdx, CVBS_IN_BASE + (90 + ch * 2) * PCIE_BARADDROFSIZE);
+	*w = res & 0xFFFF;
+	*h = (res >> 16) & 0xFFFF;
+	if (*w > pdx->m_MaxInputWidth)
+		*w = pdx->m_MaxInputWidth;
+	if (pdx->m_DeviceHW_Version == 0 && *h > 2160)
+		*h = 2160;
+	if (*interlace)
+		*h *= 2;
+	return *w >= 320 && *h >= 240 && *w <= MAX_VIDEO_HW_W && *h <= MAX_VIDEO_HW_H && !(*w & 1);
 }
+
 static v4l2_model_timing_t *Get_input_framesizeIndex(int width,int height)
 {
 	int i;
@@ -358,67 +369,51 @@ static v4l2_model_timing_t *Get_input_framesizeIndex(int width,int height)
 	return NULL;
 }
 
+/* A size the driver can deliver: the live input size, or a table size the CPU scaler produces. */
+static bool hws_size_supported(struct hws_video *videodev, int w, int h)
+{
+	int nw, nh, il;
+
+	if (Get_input_framesizeIndex(w, h))
+		return true;
+	return hws_read_input(videodev->dev, videodev->index, &nw, &nh, &il) && w == nw && h == nh;
+}
+
+static void hws_fill_pix(struct v4l2_pix_format *pix, const framegrabber_pixfmt_t *fmt)
+{
+	pix->field = V4L2_FIELD_NONE;
+	pix->pixelformat = fmt->fourcc;
+	pix->bytesperline = (pix->width * fmt->depth) >> 3;
+	pix->sizeimage = pix->height * pix->bytesperline;
+	pix->colorspace = V4L2_COLORSPACE_REC709;
+	pix->priv = 0;
+}
+
+static int hws_vidioc_g_fmt_vid_cap(struct file *file, void *fh, struct v4l2_format *fmt)
+{
+	struct hws_video *videodev = video_drvdata(file);
+
+	fmt->fmt.pix.width = videodev->current_out_width;
+	fmt->fmt.pix.height = videodev->curren_out_height;
+	hws_fill_pix(&fmt->fmt.pix, framegrabber_g_out_pixelfmt(videodev));
+	return 0;
+}
+
 static int hws_vidioc_try_fmt_vid_cap(struct file *file, void *fh, struct v4l2_format *f)
 {
 	struct hws_video *videodev = video_drvdata(file);
-	v4l2_model_timing_t *pModeTiming;
 	struct v4l2_pix_format *pix = &f->fmt.pix;
 	const framegrabber_pixfmt_t *fmt;
-	//int TimeingIndex = f->index;
-	//printk( "%s(%d)\n", __func__,videodev->index);
-	//printk( "pix->height =%d  pix->width =%d \n", pix->height,pix->width);
-    if (pix->pixelformat == 0) {
-        if (framegrabber_g_support_pixelfmt_by_fourcc(videodev->pixfmt))
-            pix->pixelformat = videodev->pixfmt;
-        else
-            pix->pixelformat = V4L2_PIX_FMT_YUYV;
-    }
 
 	fmt = framegrabber_g_support_pixelfmt_by_fourcc(pix->pixelformat);
-	if(!fmt)
-	{
-        pix->pixelformat = V4L2_PIX_FMT_YUYV;
-        fmt = framegrabber_g_support_pixelfmt_by_fourcc(pix->pixelformat);
-        if (!fmt) {
-            printk("%s.. format not support (even fallback)\n", __func__);
-            return -EINVAL;
-        }
+	if (!fmt)
+		fmt = framegrabber_g_support_pixelfmt_by_fourcc(V4L2_PIX_FMT_YUYV);
+	/* anything else, including 0 and -1 sizes, gets the current format */
+	if (!hws_size_supported(videodev, pix->width, pix->height)) {
+		pix->width = videodev->current_out_width;
+		pix->height = videodev->curren_out_height;
 	}
-	if (pix->width == 0 || pix->height == 0) {
-        pModeTiming = v4l2_model_get_support_videoformat(videodev->current_out_size_index);
-        if (!pModeTiming) return -EINVAL;
-        pix->width  = pModeTiming->frame_size.width;
-        pix->height = pModeTiming->frame_size.height;
-    }
-	pModeTiming = Get_input_framesizeIndex(pix->width,pix->height);
-	if(!pModeTiming)
-	{
-		printk("%s.. format2 not support  %dX%d\n",__func__,pix->width,pix->height);
-		pModeTiming = v4l2_model_get_support_videoformat(videodev->current_out_size_index);
-		if(pModeTiming ==NULL) return -EINVAL;
-		pix->field = V4L2_FIELD_NONE;
-		pix->width=pModeTiming->frame_size.width;
-		pix->height=pModeTiming->frame_size.height;
-		pix->bytesperline = (pix->width * fmt->depth) >> 3;
-		pix->sizeimage =pix->height * pix->bytesperline;
-		pix->colorspace = V4L2_COLORSPACE_REC709;//V4L2_COLORSPACE_SMPTE170M;
-		pix->priv = 0;
-		//return -EINVAL;
-		return 0;
-	}
-	pix->field = V4L2_FIELD_NONE;
-	pix->width=pModeTiming->frame_size.width;
-	pix->height=pModeTiming->frame_size.height;
-	pix->bytesperline = (pix->width * fmt->depth) >> 3;
-	pix->sizeimage =pix->height * pix->bytesperline;
-	pix->colorspace = V4L2_COLORSPACE_REC709;//V4L2_COLORSPACE_SMPTE170M;
-	pix->priv = 0;
-
-	//printk("%s<<pix->width=%d.pix->height=%d.\n",__func__,pix->width,pix->height);
-	return 0;
-
-
-	//----------------------------------
+	hws_fill_pix(pix, fmt);
 	return 0;
 }
 /*
@@ -455,8 +450,7 @@ static int vidioc_s_fmt_vid_cap(struct file *file, void *priv,struct v4l2_format
     if (err)
         return err;
 
-	nVideoFmtIndex = v4l2_get_suport_VideoFormatIndex(f);
-	if(nVideoFmtIndex ==-1) return -EINVAL;
+	nVideoFmtIndex = v4l2_get_suport_VideoFormatIndex(f);	/* -1 for a native-only size */
 
 	if ((f->fmt.pix.width != videodev->current_out_width ||
 	     f->fmt.pix.height != videodev->curren_out_height ||
@@ -493,70 +487,58 @@ int hws_vidioc_g_parm(struct file *file,void *fh, struct v4l2_streamparm *setfps
 	struct hws_video *videodev = video_drvdata(file);
 	v4l2_model_timing_t *p_SupportmodeTiming;
 
-	//printk( "%s(%d) Frame Rate =%d \n", __func__, videodev->index,io_frame_rate);
 	if (setfps->type != V4L2_BUF_TYPE_VIDEO_CAPTURE)
-	{
-		printk("%s..\n",__func__);
 		return -EINVAL;
-	}
-	p_SupportmodeTiming = v4l2_model_get_support_videoformat(videodev->current_out_size_index);
-	if(p_SupportmodeTiming ==NULL) return -EINVAL;
+	p_SupportmodeTiming = Get_input_framesizeIndex(videodev->current_out_width, videodev->curren_out_height);
 	setfps->type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 	/* the input's measured rate; the table's nominal rate until one is measured */
 	if (!hws_input_timeperframe(videodev->dev, videodev->index, &setfps->parm.capture.timeperframe)) {
 		setfps->parm.capture.timeperframe.numerator=1000;
-		setfps->parm.capture.timeperframe.denominator=p_SupportmodeTiming->refresh_rate*1000;
+		setfps->parm.capture.timeperframe.denominator=(p_SupportmodeTiming ? p_SupportmodeTiming->refresh_rate : 60)*1000;
 	}
 	//printk( "%s fps =%d \n", __func__, p_SupportmodeTiming->refresh_rate);
 	return 0;
 }
+/*
+ * The live input size comes first (it needs no scaling), then the table sizes
+ * the CPU scaler can produce, without repeating the input size.
+ */
 static int hws_vidioc_enum_framesizes(struct file *file, void *fh, struct v4l2_frmsizeenum *fsize)
 {
-	//struct hws_video *videodev = video_drvdata(file);
+	struct hws_video *videodev = video_drvdata(file);
+	struct hws_pcie_dev *pdx = videodev->dev;
 	const framegrabber_pixfmt_t *pixfmt;
-	v4l2_model_timing_t *p_SupportmodeTiming;
-	int width=0,height=0;
-	int frameRate;
-	//printk( "%s(%d)-FrameIndex=[%d]\n", __func__,videodev->index,fsize->index);
-	//----------------------------
-	pixfmt=framegrabber_g_support_pixelfmt_by_fourcc(fsize->pixel_format);
-	if(pixfmt==NULL)
-	{
-		//printk("%s..\n",__func__);
-		return -EINVAL;
-	}
-	p_SupportmodeTiming = v4l2_model_get_support_videoformat(fsize->index);
-	if(p_SupportmodeTiming == NULL)
-	{
-		//printk("%s. invalid framesize[%d]\n",__func__,fsize->index);
-		return -EINVAL;
-	}
-	width = p_SupportmodeTiming->frame_size.width;
-	height = p_SupportmodeTiming->frame_size.height;
-	frameRate = p_SupportmodeTiming->refresh_rate;
+	int nw = 0, nh = 0, il, i;
+	u32 idx = fsize->index;
+	bool native;
 
-	//printk("%s...supportframesize[%d] width=%d height=%d Framerate=%d..\n",__func__,fsize->index,width,height,frameRate); //12
-	if((width ==0) || (height ==0))
-	{
-		//printk("%s. invalid framesize 2\n",__func__);
+	pixfmt = framegrabber_g_support_pixelfmt_by_fourcc(fsize->pixel_format);
+	if (!pixfmt)
 		return -EINVAL;
+	native = hws_read_input(pdx, videodev->index, &nw, &nh, &il);
+	if (native) {
+		if (idx == 0) {
+			fsize->type = V4L2_FRMSIZE_TYPE_DISCRETE;
+			fsize->discrete.width = nw;
+			fsize->discrete.height = nh;
+			return 0;
+		}
+		idx--;
 	}
-	fsize->type = V4L2_FRMSIZE_TYPE_DISCRETE;
-	fsize->pixel_format=pixfmt->fourcc;
-	fsize->discrete.width=width;
-	fsize->discrete.height=height;
-	//fsize->discrete.denominator = frameRate;
-	//fsize->discrete..numerator =1 ;
-	//-------------------------------
-	//width = videodev->current_out_width;
-	//height = videodev->curren_out_height;
-	//fsize->type = V4L2_FRMSIZE_TYPE_DISCRETE;
-	//fsize->pixel_format=videodev->pixfmt;
-	//fsize->discrete.width=width;
-	//fsize->discrete.height=height;
-	return 0;
-
-
+	for (i = 0; i < V4L2_MODEL_VIDEOFORMAT_NUM; i++) {
+		const struct frame_size *fs = &support_videofmt[i].frame_size;
+		if (native && fs->width == nw && fs->height == nh)
+			continue;
+		if (fs->width > pdx->m_MaxInputWidth)
+			continue;
+		if (idx-- == 0) {
+			fsize->type = V4L2_FRMSIZE_TYPE_DISCRETE;
+			fsize->discrete.width = fs->width;
+			fsize->discrete.height = fs->height;
+			return 0;
+		}
+	}
+	return -EINVAL;
 }
 
 static int hws_vidioc_enum_input(struct file *file, void *priv,struct v4l2_input *i)
@@ -704,6 +686,18 @@ static int hws_open(struct file *file)
         file->private_data = NULL;
         return ret;
     }
+    /* the first app to open an idle device starts at the input's own size */
+    if (videodev->fileindex == 0 && !atomic_read(&videodev->engine_users) &&
+        !hws_any_queue_busy(videodev)) {
+        int nw, nh, il;
+        if (hws_read_input(pdx, videodev->index, &nw, &nh, &il)) {
+            spin_lock_irqsave(&pdx->videoslock[videodev->index], flags);
+            videodev->current_out_width = nw;
+            videodev->curren_out_height = nh;
+            videodev->current_out_size_index = v4l2_get_suport_VideoFormatIndex_wh(nw, nh);
+            spin_unlock_irqrestore(&pdx->videoslock[videodev->index], flags);
+        }
+    }
     spin_lock_irqsave(&pdx->videoslock[videodev->index], flags);
     videodev->fileindex++;
     spin_unlock_irqrestore(&pdx->videoslock[videodev->index], flags);
@@ -837,7 +831,6 @@ static int hws_vidioc_enum_frameintervals(struct file *file, void *fh,
 	//struct hws_video *videodev = video_drvdata(file);
 	int Index;
 	int FrameRate;
-	v4l2_model_timing_t * pModeTiming;
 	Index = fival->index;
 	//printk( "%s(CH-%d) FrameIndex =%d \n", __func__,videodev->index,Index);
 	if(Index <0 ||Index >=NUM_FRAMERATE_CONTROLS)
@@ -847,8 +840,8 @@ static int hws_vidioc_enum_frameintervals(struct file *file, void *fh,
 
 	FrameRate = v4l2_model_get_support_framerate(Index);
 	if(FrameRate == -1) return -EINVAL;
-	pModeTiming = Get_input_framesizeIndex(fival->width,fival->height);
-	if(pModeTiming == NULL) return -EINVAL;
+	if (!hws_size_supported(video_drvdata(file), fival->width, fival->height))
+		return -EINVAL;
 
 	#if 1
 	fival->type = V4L2_FRMIVAL_TYPE_DISCRETE;
@@ -898,9 +891,8 @@ int hws_vidioc_s_parm(struct file *file, void *fh,struct v4l2_streamparm *a)
 	io_frame_rate = a->parm.capture.timeperframe.denominator/a->parm.capture.timeperframe.numerator;
 	//io_index = a->parm.capture.timeperframe.index;
 	//printk( "%s(CH-%d) io_index =%d \n", __func__,videodev->index,io_index);
-	p_SupportmodeTiming = v4l2_model_get_support_videoformat(videodev->current_out_size_index);
-	if(p_SupportmodeTiming ==NULL) return -EINVAL;
-	in_frame_rate = p_SupportmodeTiming->refresh_rate;
+	p_SupportmodeTiming = Get_input_framesizeIndex(videodev->current_out_width, videodev->curren_out_height);
+	in_frame_rate = p_SupportmodeTiming ? p_SupportmodeTiming->refresh_rate : 60;
 	//printk( "%s(ch-%d)io_frame_rate =%d  in_frame_rate =%d \n", __func__,videodev->index,io_frame_rate,in_frame_rate);
 	return 0;
 }
