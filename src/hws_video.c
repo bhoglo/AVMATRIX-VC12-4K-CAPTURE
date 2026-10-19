@@ -883,6 +883,12 @@ static const struct v4l2_dv_timings_cap hws_timings_cap = {
 		V4L2_DV_BT_CAP_REDUCED_BLANKING | V4L2_DV_BT_CAP_CUSTOM)
 };
 
+/* v4l2_*_dv_timings_cap filter: only timings whose size the driver can deliver */
+static bool hws_timings_supported(const struct v4l2_dv_timings *t, void *handle)
+{
+	return hws_size_supported(handle, t->bt.width, t->bt.height);
+}
+
 static u64 hws_tpf_ns(const struct v4l2_fract *f)
 {
 	return f->denominator ? div_u64((u64)f->numerator * NSEC_PER_SEC, f->denominator) : 0;
@@ -963,12 +969,10 @@ static int hws_s_dv_timings(struct file *file, void *fh, struct v4l2_dv_timings 
 	struct hws_pcie_dev *pdx = videodev->dev;
 	unsigned long flags;
 
-	if (!v4l2_valid_dv_timings(t, &hws_timings_cap, NULL, NULL))
+	if (!v4l2_valid_dv_timings(t, &hws_timings_cap, hws_timings_supported, videodev))
 		return -EINVAL;
 	if (v4l2_match_dv_timings(t, &videodev->dv_timings, 0, false))
 		return 0;
-	if (!hws_size_supported(videodev, t->bt.width, t->bt.height))
-		return -EINVAL;
 	if (hws_any_queue_busy(videodev))
 		return -EBUSY;
 	videodev->dv_timings = *t;
@@ -981,7 +985,8 @@ static int hws_s_dv_timings(struct file *file, void *fh, struct v4l2_dv_timings 
 
 static int hws_enum_dv_timings(struct file *file, void *fh, struct v4l2_enum_dv_timings *t)
 {
-	return v4l2_enum_dv_timings_cap(t, &hws_timings_cap, NULL, NULL);
+	return v4l2_enum_dv_timings_cap(t, &hws_timings_cap, hws_timings_supported,
+					video_drvdata(file));
 }
 
 static int hws_dv_timings_cap(struct file *file, void *fh, struct v4l2_dv_timings_cap *cap)
