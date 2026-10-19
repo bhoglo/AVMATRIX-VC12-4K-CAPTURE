@@ -5502,6 +5502,7 @@ static void InitVideoSys(struct hws_pcie_dev *pdx,int set)
 	//start Run
 	//---------------------------------------------
 	WRITE_REGISTER_ULONG(pdx,CVBS_IN_BASE, 0x80000000);
+	usleep_range(500, 600);	/* the Windows driver waits 500 us here (stage 4.9) */
 	//DelayUs(500);
 	m_Valude= 0x00FFFFFF;
 	m_Valude |= 0x80000000;
