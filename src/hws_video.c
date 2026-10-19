@@ -32,6 +32,7 @@ static void hws_complete_buffer(struct hwsvideo_buffer *buf, enum vb2_buffer_sta
 static void hws_snap_regs(struct hws_pcie_dev *pdx, char what, int en);
 static void hws_fill_canary(struct hws_pcie_dev *pdx);
 static void hws_check_canary(struct hws_pcie_dev *pdx);
+static int Get_Video_Status(struct hws_pcie_dev *pdx,unsigned int  ch);
 static bool hws_input_timeperframe(struct hws_pcie_dev *pdx, int ch, struct v4l2_fract *tpf);
 static void WRITE_REGISTER_ULONG(struct hws_pcie_dev *pdx,u32 RegisterOffset,u32 Value);
 static u32 READ_REGISTER_ULONG(struct hws_pcie_dev *pdx,u32 RegisterOffset);
@@ -1540,6 +1541,13 @@ static int hws_start_streaming_multi(struct vb2_queue *q, unsigned int count)
         mutex_lock(&videodev->cap_lock);
         videodev->dev->m_FrameSeq[videodev->index] = 0;
         videodev->top_done = false;
+        /*
+         * Program the DMA lengths for the live input now, not at the next
+         * status poll: until then the card DMAs the frame with the old
+         * lengths and runs past them (see HWS_REG_DMA_MAX_SIZE).
+         */
+        videodev->dev->m_curr_No_Video[videodev->index] =
+            Get_Video_Status(videodev->dev, videodev->index);
         mutex_unlock(&videodev->cap_lock);
         StartVideoCapture(videodev->dev, videodev->index);
     }
@@ -4429,7 +4437,7 @@ static int  StartAudioCapture(struct hws_pcie_dev *pdx,int index)
  * there. The card should never write it, so changes are stray or oversized
  * DMA writes (stage 3.5). Filled at probe and again when the input size
  * moves the gap; the status thread checks it every poll (hws_check_canary),
- * logs each write and re-arms. Only probe and the status thread touch it.
+ * logs each write and re-arms. Filled at probe, otherwise only under cap_lock.
  */
 #define HWS_CANARY 0xC0FFEE11u
 static void hws_fill_canary(struct hws_pcie_dev *pdx)
@@ -5227,7 +5235,9 @@ int MainKsThreadHandle(void *arg)
 			if(pdx->video[i].fileindex > 0)
 				hws_check_source_change(&pdx->video[i]);
 		}
+		mutex_lock(&pdx->video[0].cap_lock);	/* start_streaming can refill it */
 		hws_check_canary(pdx);
+		mutex_unlock(&pdx->video[0].cap_lock);
 		/*
 		 * TASK_IDLE: ssleep() slept uninterruptibly, which counts toward
 		 * the load average and kept it 1.0 higher for as long as the
@@ -5403,6 +5413,15 @@ static void InitVideoSys(struct hws_pcie_dev *pdx,int set)
 	if(pdx->m_bStartRun&&(set==0)) return;
 	WRITE_REGISTER_ULONG(pdx,( CVBS_IN_BASE + (0 * PCIE_BARADDROFSIZE)), 0X00);
 	SetDMAAddress(pdx);
+	/*
+	 * Keep an over-long quarter, and the 2 KiB block the card writes where
+	 * it stops, inside the buffer and clear of the audio ring at its end.
+	 * Still larger than the biggest quarter (4096x2160). Re-applied after
+	 * suspend, which resets it.
+	 */
+	if (pdx->m_DeviceHW_Version && pdx->m_MaxHWVideoBufferSize)
+		WRITE_REGISTER_ULONG(pdx, HWS_REG_DMA_MAX_SIZE,
+				     (pdx->m_MaxHWVideoBufferSize - MAX_AUDIO_CAP_SIZE - 2048) / 16);
 	if(set ==0)
 	{
 		for(i=0; i<pdx->m_nMaxChl;i++)
@@ -5609,8 +5628,9 @@ static int hws_dbg_dma_show(struct seq_file *m, void *unused)
 		hi[i] = READ_REGISTER_ULONG(pdx, PCI_ADDR_TABLE_BASE + 0x208 + 8 * i);
 		lo[i] = READ_REGISTER_ULONG(pdx, PCI_ADDR_TABLE_BASE + 0x208 + 8 * i + 4);
 	}
-	seq_printf(m, "buffer size %d KiB, audio ring %d KiB at the end of each\n",
-		   pdx->m_MaxHWVideoBufferSize / 1024, MAX_AUDIO_CAP_SIZE / 1024);
+	seq_printf(m, "buffer size %d KiB, audio ring %d KiB at the end of each, register 9 %#x (limit at offset %#x)\n",
+		   pdx->m_MaxHWVideoBufferSize / 1024, MAX_AUDIO_CAP_SIZE / 1024,
+		   READ_REGISTER_ULONG(pdx, HWS_REG_DMA_MAX_SIZE), READ_REGISTER_ULONG(pdx, HWS_REG_DMA_MAX_SIZE) * 16);
 	for (i = 0; i < pdx->m_nMaxChl; i++) {
 		if (!pdx->m_pbyVideoBuffer[i])
 			continue;

@@ -150,4 +150,12 @@ typedef enum {
 } COLOR;
 
 //----------------------------
+/*
+ * Register 9: DMA size limit in 16-byte units. A quarter DMA'd with a length
+ * shorter than the frame (the first frames after a resolution change) runs
+ * on up to this offset and ends with a 2 KiB block there. Reset value 0x44000
+ * (4.25 MiB), past the end of a 4 MiB buffer.
+ */
+#define HWS_REG_DMA_MAX_SIZE	(CVBS_IN_BASE + 9 * PCIE_BARADDROFSIZE)
+
 #endif
