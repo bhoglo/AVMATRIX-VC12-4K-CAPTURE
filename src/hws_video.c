@@ -4277,10 +4277,8 @@ static void StopDevice(struct hws_pcie_dev *pdx)
 			EnableVideoCapture(pdx,i,0);
 			EnableAudioCapture(pdx,i,0);
 		}
+		WRITE_REGISTER_ULONG(pdx, INT_EN_REG_BASE, 0);	/* before free_irq, for a shared line */
 	}
-	//if(device_lost) return;
-	DmaMemFreePool(pdx);
-	//printk("StopDevice Done\n");
 
 
 }
@@ -4308,73 +4306,58 @@ void StopKSThread(struct hws_pcie_dev *pdx)
 	if(pdx->mMain_tsk)
 	{
 		kthread_stop(pdx->mMain_tsk);
+		pdx->mMain_tsk = NULL;
 	}
 }
 
-//----------------------------
-static void hws_remove(struct pci_dev *pdev)
+static void hws_unregister_video(struct hws_pcie_dev *dev)
 {
 	int i;
-	struct video_device *vdev;
-	struct hws_pcie_dev *dev =
-	(struct hws_pcie_dev*) pci_get_drvdata(pdev);
-	//----------------------------
-	if(dev->map_bar0_addr == NULL) return;
-	//StopSys(dev);
-	StopDevice(dev);
-	/* disable interrupts */
-	irq_teardown(dev);
-	StopKSThread(dev);
-	//printk("hws_remove  0\n");
-	for ( i = 0; i<dev->m_nCurreMaxVideoChl; i++)
-	{
-		tasklet_kill(&dev->dpc_audio_tasklet[i]);
-	}
-	//-------------------------
-	//printk("hws_remove  1\n");
-	for(i=0;i<dev->m_nCurreMaxVideoChl;i++){
-		if(dev->audio[i].resampled_buf)
-		{
-			vfree(dev->audio[i].resampled_buf);
-			dev->audio[i].resampled_buf = NULL;
-		}
-		if(dev->audio[i].card)
-		{
-			snd_card_free(dev->audio[i].card);
-			dev->audio[i].card=NULL;
-		}
-	}
-	for(i=0;i<dev->m_nCurreMaxVideoChl;i++){
-		vdev = &dev->video[i].vdev;
-		video_unregister_device(vdev);
+
+	for (i = 0; i < dev->m_nCurreMaxVideoChl; i++) {
+		video_unregister_device(&dev->video[i].vdev);
 		v4l2_ctrl_handler_free(&dev->video[i].ctrl_hdl);
 		v4l2_device_unregister(&dev->video[i].v4l2_dev);
 	}
-	//-----------------
-	if(dev->auwq)
-	{
-		destroy_workqueue(dev->auwq);
-	}
-	dev->auwq=NULL;
-	//free_irq(dev->pdev->irq, dev);
+}
 
+/*
+ * Teardown, in the reverse order of probe: stop everything that touches the
+ * card or its buffers (status thread, capture engines, interrupt handlers,
+ * audio work) before the devices go away and the DMA buffers are freed.
+ * Freeing the IRQ also waits for the IRQ thread.
+ */
+static void hws_remove(struct pci_dev *pdev)
+{
+	int i;
+	struct hws_pcie_dev *dev = pci_get_drvdata(pdev);
+
+	if (!dev || dev->map_bar0_addr == NULL)
+		return;
+	StopKSThread(dev);
+	StopDevice(dev);
+	irq_teardown(dev);
+	tasklet_kill(&dev->dpc_audio_tasklet[0]);
+	destroy_workqueue(dev->auwq);
+	dev->auwq = NULL;
+	for (i = 0; i < dev->m_nCurreMaxVideoChl; i++) {
+		if (dev->audio[i].resampled_buf) {
+			vfree(dev->audio[i].resampled_buf);
+			dev->audio[i].resampled_buf = NULL;
+		}
+		if (dev->audio[i].card) {
+			snd_card_free(dev->audio[i].card);
+			dev->audio[i].card = NULL;
+		}
+	}
+	hws_unregister_video(dev);
+	DmaMemFreePool(dev);
 	iounmap(dev->info.mem[0].internal_addr);
-
-	//pci_disable_device(pdev);
-	if (dev->msix_enabled)
-	{
-		pci_disable_msix(pdev);
-		dev->msix_enabled = 0;
-	}
-	else if (dev->msi_enabled)
-	{
+	if (dev->msi_enabled)
 		pci_disable_msi(pdev);
-		dev->msi_enabled = 0;
-	}
-	kfree(dev);
 	pci_disable_device(pdev);
 	pci_set_drvdata(pdev, NULL);
-	//printk("hws_remove  Done\n");
+	kfree(dev);
 }
 //---------------------------------------
 static void CheckCardStatus(struct hws_pcie_dev *pdx)
@@ -5173,10 +5156,14 @@ int MainKsThreadHandle(void *arg)
 	//printk("MainKsThreadHandle Exit");
 	return 0;
 }
-static void StartKSThread(struct hws_pcie_dev *pdx)
+static int StartKSThread(struct hws_pcie_dev *pdx)
 {
-	pdx->mMain_tsk = kthread_run(MainKsThreadHandle,(void*)pdx,"StartKSThread task");
+	struct task_struct *t = kthread_run(MainKsThreadHandle,(void*)pdx,"StartKSThread task");
 
+	if (IS_ERR(t))
+		return PTR_ERR(t);
+	pdx->mMain_tsk = t;
+	return 0;
 }
 
 
@@ -5254,10 +5241,8 @@ static int probe_scan_for_msi(struct hws_pcie_dev *lro, struct pci_dev *pdev)
 		//printk("pci_enable_msi()\n");
 		rc = pci_enable_msi(pdev);
 		if (rc < 0)
-		{
-			printk("Couldn't enable MSI mode: rc = %d\n", rc);
-		}
-		lro->msi_enabled = 1;
+			dev_warn(&pdev->dev, "MSI unavailable (%d), using a legacy interrupt\n", rc);
+		lro->msi_enabled = rc >= 0;
 		lro->msix_enabled = 0;
 	} else {
 		//printk("MSI/MSI-X not detected - using legacy interrupts\n");
@@ -5289,9 +5274,7 @@ static int irq_setup(struct hws_pcie_dev *lro, struct pci_dev *pdev)
 			pci_read_config_byte(pdev, PCI_INTERRUPT_PIN, &val);
 			//printk("Legacy Interrupt register value = %d\n", val);
 		}
-		//irq_flag = lro->msi_enabled ? 0 : IRQF_SHARED;
-		irq_flag = lro->msi_enabled ? IRQF_SHARED:0;
-		//irq_flag = IRQF_SHARED;
+		irq_flag = lro->msi_enabled ? 0 : IRQF_SHARED;
 
 		rc = request_threaded_irq(pdev->irq, irqhandler, hws_irq_thread, irq_flag, pci_name(pdev), lro);
 		if (rc)
@@ -5446,215 +5429,108 @@ static int ReadChipId(struct hws_pcie_dev *pdx)
 
 static int hws_probe(struct pci_dev *pdev, const struct pci_device_id *pci_id)
 {
-	struct hws_pcie_dev *gdev=NULL;
-	int err = 0, ret = -ENODEV;
-	//u8 val=0;
-	//u32 m_dev_ver=0;
-	//u32 m_dev_vid_ver=0;
-	//u32 m_dev_supportYV12=0;
-	//u32 m_Device_Version=0;
-	//ULONG m_tmpHWKey;
-	//ULONG m_tmpVersion;
-	//u32 m_tmpVersion=0;
-	//u32 m_Device_SubVersion=0;
-	//u32 m_Device_SupportYV12=0;
-	//ULONG n_VideoModle =0;
-	//u64 *mem64_ptr;
-	int j, i;
-	//---------------------------
-	//printk("hws_probe  probe\n");
-	//------------------------
+	struct hws_pcie_dev *gdev;
+	int i, j, ret;
+
 	gdev = alloc_dev_instance(pdev);
-	//sys_dvrs_hw_pdx = gdev;
-	gdev->pdev = pdev;
-
-	gdev->dwDeviceID = gdev->pdev->device;
-	gdev->dwVendorID = gdev->pdev->vendor;
+	if (!gdev)
+		return -ENOMEM;
+	gdev->dwDeviceID = pdev->device;
+	gdev->dwVendorID = pdev->vendor;
 	printk("MV360: Device =%X VID =%X\n",gdev->dwDeviceID,gdev->dwVendorID);
-	err = pci_enable_device(pdev);
-	if (err) {
-		dev_err(&pdev->dev, "%s: pci_enable_device failed: %d\n",
-				__func__, err);
-		goto  err_alloc;
+
+	ret = pci_enable_device(pdev);
+	if (ret) {
+		dev_err(&pdev->dev, "pci_enable_device failed: %d\n", ret);
+		goto err_free;
 	}
-	//printk("hws_probe  probe 2\n");
-	#if 0
-	if (pci_request_regions(pdev, "longtimetech"))
-		goto err_disable;
-	if (pci_set_dma_mask(pdev, DMA_BIT_MASK(32))) {
-		printk(KERN_EMERG "fail pci_set_dma_mask\n");
-		goto err_release;
-}
+	enable_pcie_relaxed_ordering(pdev);
+	pci_set_master(pdev);
+	probe_scan_for_msi(gdev, pdev);	/* falls back to INTx */
+#ifdef CONFIG_ARCH_TI816X
+	pcie_set_readrq(pdev, 128);	/* known root complex's max read request size */
 #endif
-
-//printk("hws_probe  probe 3\n");
-enable_pcie_relaxed_ordering(pdev);
-//printk("hws_probe  probe 4\n");
-pci_set_master(pdev);
-//------------------------------------
-ret = probe_scan_for_msi(gdev, pdev);
-if (ret < 0)
-	goto disable_msi;
-	//------------------------
-	//printk("hws_probe  probe 5\n");
-	/* known root complex's max read request sizes */
-	#ifdef CONFIG_ARCH_TI816X
-	//dbg_init("TI816X RC detected: limit MaxReadReq size to 128 bytes.\n");
-	pcie_set_readrq(pdev, 128);
-#endif
-#if 0
-gdev->info.mem[0].addr = pci_resource_start(pdev, 0);
-if (!gdev->info.mem[0].addr)
-	goto err_release;
-	#endif
-	//printk("hws_probe  ioremap_nocache\n");
-	#if 0
-	gdev->info.mem[0].internal_addr = ioremap_nocache(pci_resource_start(pdev, 0),
-	pci_resource_len(pdev, 0));
-#else
-//gdev->info.mem[0].internal_addr = ioremap_cache(pci_resource_start(pdev, 0),
-//gdev->info.mem[0].internal_addr = ioremap_nocache(pci_resource_start(pdev, 0),
-//pci_resource_len(pdev, 0));
-
-gdev->info.mem[0].internal_addr = ioremap(pci_resource_start(pdev, 0),
-										  pci_resource_len(pdev, 0));
-
-#endif
-gdev->auwq=NULL;
-gdev->map_bar0_addr = (u32 *)gdev->info.mem[0].internal_addr;
-/* state the IRQ thread uses, set up before the interrupt is requested */
-INIT_KFIFO(gdev->half_events);
-for (i = 0; i < MAX_VID_CHANNELS; i++) {
-	mutex_init(&gdev->video[i].cap_lock);
-	INIT_LIST_HEAD(&gdev->video[i].frame_bufs);
-}
-
-if (!gdev->info.mem[0].internal_addr)
-	goto err_release;
-
+	gdev->info.mem[0].internal_addr = ioremap(pci_resource_start(pdev, 0), pci_resource_len(pdev, 0));
+	if (!gdev->info.mem[0].internal_addr) {
+		ret = -ENOMEM;
+		goto err_msi;
+	}
+	gdev->map_bar0_addr = (u32 *)gdev->info.mem[0].internal_addr;
 	gdev->info.mem[0].size = pci_resource_len(pdev, 0);
-gdev->info.mem[0].memtype = UIO_MEM_PHYS;
+	gdev->info.mem[0].memtype = UIO_MEM_PHYS;
 
-
-
-//printk(" pdev->irq = %d \n",pdev->irq);
-ret = irq_setup(gdev, pdev);
-if (ret)
-	goto err_register;
-
-	//printk("pci_set_drvdata \n");
-	pci_set_drvdata(pdev, gdev);
-//enable irq
-//enable_irq(gdev->info.irq);
-//------
-ReadChipId(gdev);
-//---------------
-for (i = 0; i<MAX_VID_CHANNELS; i++)
-{
-	SetVideoFormteSize(gdev,i,1920,1080);
-	gdev->m_bVCapStarted[i] = 0;
-	gdev->video_toggle[i] = 0;
-	//----------------------
-
-	gdev->m_pbyVideoBuffer[i] = NULL;
-	gdev->m_VideoInfo[i].dwisRuning= 0;
-	gdev->m_VideoInfo[i].m_pVideoScalerBuf = NULL;
-	gdev->m_VideoInfo[i].m_pVideoStaging = NULL;
-	for (j = 0; j<MAX_VIDEO_QUEUE; j++)
+	/* everything the interrupt handlers and the status thread use exists before they can run */
+	INIT_KFIFO(gdev->half_events);
+	ReadChipId(gdev);
+	for (i = 0; i<MAX_VID_CHANNELS; i++)
 	{
-		gdev->m_pVCAPStatus[i][j].byLock = MEM_UNLOCK;
-		gdev->m_pVCAPStatus[i][j].byField = 0;
-		gdev->m_pVCAPStatus[i][j].byPath = 2;
-		gdev->m_pVCAPStatus[i][j].dwWidth = 1920 ;
-		gdev->m_pVCAPStatus[i][j].dwHeight = 1080;
-		gdev->m_pVCAPStatus[i][j].dwinterlace =0;
+		mutex_init(&gdev->video[i].cap_lock);
+		INIT_LIST_HEAD(&gdev->video[i].frame_bufs);
+		SetVideoFormteSize(gdev,i,1920,1080);
+		for (j = 0; j<MAX_VIDEO_QUEUE; j++)
+		{
+			gdev->m_pVCAPStatus[i][j].byLock = MEM_UNLOCK;
+			gdev->m_pVCAPStatus[i][j].byPath = 2;
+			gdev->m_pVCAPStatus[i][j].dwWidth = 1920 ;
+			gdev->m_pVCAPStatus[i][j].dwHeight = 1080;
+		}
+		spin_lock_init(&gdev->videoslock[i]);
+		spin_lock_init(&gdev->audiolock[i]);
+		for(j=0; j<MAX_AUDIO_QUEUE;j++)
+			gdev->m_AudioInfo[i].pStatusInfo[j].byLock = MEM_UNLOCK;
 	}
-	//--------audio
-	gdev->m_pAudioEvent[i] = 0;
-	gdev->m_bACapStarted[i]=0;
-	gdev->m_bAudioRun[i] = 0;
-	gdev->m_bAudioStop[i] = 0;
-	gdev->m_nAudioBusy[i] = 0;
-	gdev->m_nRDAudioIndex[i] =0;
-	//sema_init(&gdev->sem_video[i],1);
-	//spin_lock_init(&gdev->video_lock[i]);
-	spin_lock_init(&gdev->videoslock[i]);
-	spin_lock_init(&gdev->audiolock[i]);
-	//mutex_init(&gdev->video_mutex[i]);
-	//init_waitqueue_head(&gdev->wq_video[i]);
-	//gdev->wq_flag[i]=0;
-	gdev->m_AudioInfo[i].dwisRuning =0;
-	gdev->m_AudioInfo[i].m_nAudioIndex =0;
-	gdev->audio[i].resampled_buf =NULL;
-	for(j=0; j<MAX_AUDIO_QUEUE;j++)
-	{
-		gdev->m_AudioInfo[i].m_pAudioBufData[j] =NULL;
-		gdev->m_AudioInfo[i].pStatusInfo[j].byLock = MEM_UNLOCK;
-		gdev->m_AudioInfo[i].m_pAudioBufData[j] = NULL;
+	tasklet_init(&gdev->dpc_audio_tasklet[0],DpcForIsr_Audio0,(unsigned long)gdev);
+	gdev->auwq = alloc_ordered_workqueue("hwsuhdx1-audio", 0);
+	if (!gdev->auwq) {
+		ret = -ENOMEM;
+		goto err_unmap;
 	}
-	//gdev->video[i].v4l2_dev = NULL;
-}
-//---------------------
-tasklet_init(&gdev->dpc_audio_tasklet[0],DpcForIsr_Audio0,(unsigned long)gdev);
-//tasklet_init(&gdev->dpc_audio_tasklet[1],DpcForIsr_Audio1,(unsigned long)gdev);
-//tasklet_init(&gdev->dpc_audio_tasklet[2],DpcForIsr_Audio2,(unsigned long)gdev);
-//tasklet_init(&gdev->dpc_audio_tasklet[3],DpcForIsr_Audio3,(unsigned long)gdev);
-
-//----------------------
-ret = DmaMemAllocPool(gdev);
-if(ret !=0)
-{
-	goto err_mem_alloc;
-}
-//SetDMAAddress(gdev);
-InitVideoSys(gdev,0);
-StartKSThread(gdev);
-// just test
-//StartVideoCapture(gdev,0);
-//-------------------
-//printk("hws_probe probe exit \n");
-//--------------------------------------
-//--------------------
-hws_adapters_init(gdev);
-gdev->auwq = create_singlethread_workqueue("hwsuhdx1-audio");
-//----------------
-if( hws_video_register(gdev) )
-	goto err_mem_alloc;
-	#if 1
-	if(hws_audio_register(gdev))
-		goto err_mem_alloc;
-	#endif
+	if (DmaMemAllocPool(gdev) != 0) {
+		ret = -ENOMEM;
+		goto err_wq;
+	}
+	ret = irq_setup(gdev, pdev);
+	if (ret) {
+		dev_err(&pdev->dev, "could not get IRQ %d: %d\n", pdev->irq, ret);
+		goto err_dma;
+	}
+	InitVideoSys(gdev,0);
+	ret = StartKSThread(gdev);
+	if (ret)
+		goto err_irq;
+	hws_adapters_init(gdev);
+	if (hws_video_register(gdev)) {	/* unregisters what it registered on failure */
+		ret = -ENODEV;
+		goto err_thread;
+	}
+	if (hws_audio_register(gdev)) {	/* likewise */
+		ret = -ENODEV;
+		goto err_video;
+	}
 	return 0;
-err_mem_alloc:
 
-gdev->m_bBufferAllocate = TRUE;
-DmaMemFreePool(gdev);
-gdev->m_bBufferAllocate = FALSE;
-err_register:
-iounmap(gdev->info.mem[0].internal_addr);
-irq_teardown(gdev);
-kfree(gdev);
-disable_msi:
-if (gdev->msix_enabled)
-{
-	pci_disable_msix(pdev);
-	gdev->msix_enabled = 0;
-}
-else if (gdev->msi_enabled)
-{
-	pci_disable_msi(pdev);
-	gdev->msi_enabled = 0;
-}
-err_release:
-pci_release_regions(pdev);
-pci_disable_device(pdev);
-return err;
-err_alloc:
-kfree(gdev);
-
-return	-1;
-
-
+err_video:
+	hws_unregister_video(gdev);
+err_thread:
+	StopKSThread(gdev);
+err_irq:
+	StopDevice(gdev);
+	irq_teardown(gdev);
+err_dma:
+	DmaMemFreePool(gdev);
+err_wq:
+	tasklet_kill(&gdev->dpc_audio_tasklet[0]);
+	destroy_workqueue(gdev->auwq);
+err_unmap:
+	iounmap(gdev->info.mem[0].internal_addr);
+err_msi:
+	if (gdev->msi_enabled)
+		pci_disable_msi(pdev);
+	pci_disable_device(pdev);
+err_free:
+	pci_set_drvdata(pdev, NULL);
+	kfree(gdev);
+	return ret;
 }
 
 MODULE_DEVICE_TABLE(pci, hws_pci_table);
