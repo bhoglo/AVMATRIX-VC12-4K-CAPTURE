@@ -42,3 +42,29 @@ Failures reported before the hang:
 | Load average during the run | 3.21 2.73 2.09 |
 | `IO_PAGE_FAULT` this boot | 20, unchanged by the video-only test captures. The earlier bursts happened when OBS started and stopped, which also starts and stops audio capture. That points at the audio DMA engine (stage 3.5). |
 | 10-minute OBS session | Not yet run (needs the operator). |
+
+## Stage 1: `fix/video-delivery`
+
+Driver `7cc4188`, module srcversion `659BAD3FE2AD102F241DCBD`, after a reboot on 2026-10-19 with no other app using the card. dmesg: `DMA buffers: 4 x 4608 KiB, input up to 4096x2160`.
+
+### Frame delivery (same runs as the baseline)
+
+| Run | Delivered fps | Unique frames | Delta median / max (ms), stdev | Bursts | Baseline fps |
+|---|---|---|---|---|---|
+| 1920×1080 (scaled), 4 buffers | **60.00** | 285 / 300, then 300 / 300 on a repeat | 16.67 / 20.03, 0.27 | 0 | 241.87 |
+| 1920×1080 (scaled), 1 buffer | 60.00 | 300 / 300 | 16.67 / 17.96, 0.19 | 0 | 60.00 |
+| 3840×2160 (native), 4 buffers | **60.00** | 120 / 120 | 16.67 / 16.68, 0.00 | 0 | 92.72 |
+
+Every frame has its own sequence number, with no gaps and steady 16.67 ms spacing, so the driver delivers each captured frame once. The repeats in the first 1080p run came from the source. The repeat run was 300 / 300.
+
+### Other checks
+
+| Check | Result |
+|---|---|
+| Two `v4l2-ctl` streams at once (4 buffers each) | Each 60.00 fps, 300 / 300 unique, no sequence gaps |
+| `S_FMT` 3840×2160 from a third process while both stream | `Device or resource busy`; the format stays 1920×1080 |
+| 200 open/stream/close cycles beside a 2400-frame stream | 200 / 200 succeeded. The long stream held 60.00 fps with no gaps or bursts, and dmesg had no warnings. Its 490 / 2400 unique frames reflect a static screen during the 40-second run. |
+| `v4l2-compliance` (no `-s`) | **Completes** (baseline deadlocked). 48 tests, 41 passed, 7 failed (8 failure lines; `bus_info` is reported twice). All are stage 2 items (`bus_info`, std, input attributes, two control checks, the `G_PARM` capability) except `reqbufs != EBUSY`, which is by design. |
+| "StartKSThread task" state | `I` (was `D`) |
+| `IO_PAGE_FAULT` this boot | 0 so far; no audio capture has run yet (stage 3.5) |
+| 10-minute OBS session | Not yet run (needs the operator) |
