@@ -167,3 +167,11 @@ Three OBS starts and stops, then a suspend with OBS capturing (11:35:53–11:36:
 | Canary | Buffers 0–2 untouched. **Buffer 3: 2 KiB written at offset 0x440000–0x4407ff (IOVA 0xfe440000–0xfe4407ff)**, beyond the 4K quarter (0x3f5000) and before the audio ring. 0x440000 is register 9 (0x44000) × 16. |
 
 The canary covered the whole boot, so the write could come from any of the starts, stops, the suspend or normal streaming. `bf69f64` logs each hit with its context.
+
+### Operator session 3: when the stray write happens (driver `bf69f64`, srcversion `608378952E69078C5C870C5`)
+
+The status thread logged two canary hits, both in buffer 3 at offset 0x440000–0x4407ff, at frames 9 and 24 of the first capture after boot (157 and 413 ms after audio enable). There were none during minutes of streaming, at two later OBS restarts, or at a suspend and resume with capture running. 0 `IO_PAGE_FAULT`.
+
+The kernel logs of two boots before stage 1 hold 10 and 20 faults: 256-byte writes climbing from 0xfec00000 to 0xfec01000 and beyond, one DMA run off the end of a 4 MiB buffer at 0xfe800000.
+
+Diagnosis: until the first status poll after a capture start, the DMA quarter lengths were still those of the 1920×1080 probe default, so the card ran the 4K quarter on to register 9 × 16 (0x440000) and ended with a 2 KiB block there. With 4.5 MiB buffers that is inside the buffer; with the old 4 MiB buffers it was past the end, which produced the faults. `7df0340` programs the lengths before the engine starts and sets register 9 so a run ends inside the buffer.
