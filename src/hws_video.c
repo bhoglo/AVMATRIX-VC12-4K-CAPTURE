@@ -687,10 +687,6 @@ static int hws_release(struct file *file)
     ctx = hws_ctx_from_file(file);
     videodev = ctx->video;
     pdx = videodev->dev;
-    spin_lock_irqsave(&pdx->videoslock[videodev->index], flags);
-    if (videodev->fileindex > 0)
-        videodev->fileindex--;
-    spin_unlock_irqrestore(&pdx->videoslock[videodev->index], flags);
 
     /* remove from consumers */
     spin_lock_irqsave(&videodev->consumers_lock, flags);
@@ -701,6 +697,17 @@ static int hws_release(struct file *file)
     mutex_lock(&ctx->qmutex);
     vb2_queue_release(&ctx->vbq);
     mutex_unlock(&ctx->qmutex);
+
+    /*
+     * Count the handle as closed only after its queue is gone. Otherwise a
+     * new process can open while this one is closing, see no other handle,
+     * reset the format to the input's size, and then get -EBUSY from S_FMT
+     * because this leftover queue still holds buffers.
+     */
+    spin_lock_irqsave(&pdx->videoslock[videodev->index], flags);
+    if (videodev->fileindex > 0)
+        videodev->fileindex--;
+    spin_unlock_irqrestore(&pdx->videoslock[videodev->index], flags);
 
     /* v4l2 fh cleanup */
 	#if (LINUX_VERSION_CODE < KERNEL_VERSION(6,18,0))
