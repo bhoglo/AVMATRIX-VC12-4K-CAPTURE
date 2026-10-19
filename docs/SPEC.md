@@ -20,7 +20,14 @@ A review of the driver against a running card (FPGA version 122, PCIe 2.0 x4) fo
 
 ## Ground rules
 
-- **Branches** are stacked on `fix/audio-batch-timing`: `fix/video-delivery` → `feat/input-status` → `rework/single-copy`. To upstream, rebase each topic onto `main`. The stages don't touch the audio code.
+- **Branches and PRs.** Each stage has its own branch, stacked on the one before:
+  - `fix/audio-batch-timing` (audio fix)
+  - `fix/video-delivery` (stages 0 and 1)
+  - `feat/input-status` (stage 2)
+  - `rework/single-copy` (stage 3)
+  - one new branch for each later stage
+
+  Each branch becomes one PR to upstream `main`, opened in order. After a PR merges, rebase the next branch onto upstream `main` so its PR shows only its own stage. The stages don't touch the audio code. Commits that change docs never change `src/`, so a PR can keep or drop the docs.
 - **Kernel compatibility.** Keep the existing `LINUX_VERSION_CODE` guards. Use only APIs that exist on 5.x and later: `kvmalloc`, `schedule_timeout_idle`, `vb2_is_busy`, `request_threaded_irq`, the `v4l2_*dv_timings*` helpers, `v4l2_src_change_event_subscribe`, `v4l2_ctrl_*`. Compile against every installed kernel's headers.
 - **Safety.**
   - Keep the IOMMU translating. It currently contains stray DMA writes (stage 3.5), but only while the stray address is unmapped. The card sits behind the chipset in IOMMU group 22, together with the SATA, USB, Wi-Fi and both Ethernet controllers. All devices in a group share one DMA address space. A stray write that hits a writable mapping of one of them goes through and corrupts that device's data without a fault (see H.5).
