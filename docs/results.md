@@ -311,3 +311,25 @@ PS5 switched from 4K to 1080p and back, with OBS capturing and the console-direc
 | Kernel log | No `IO_PAGE_FAULT`. The canary logs in-buffer over-long quarters at the size changes, ending at 0x47d7ff, as on every stage 4 boot (5–29 per boot). |
 
 With no HDMI source connected (operator check, 2026-10-19), the card's audio node delivers silence: nothing is audible, and there is no buzz.
+
+### 4.4: zero-copy probe (driver `5c8ee4f`)
+
+The probe build ran on branch `probe/zero-copy`; that code is debug-only and not in the stage branches.
+- **Setup:** PS5 at 3840×2160p60, OBS closed. One `v4l2-ctl` stream at the input size, started by `tests/zcprobe.sh`. IOMMU domain `DMA-FQ`.
+- **Method:** over seven frames the probe pointed registers 16–19 alternately at a 33 MB test buffer the driver allocated, and back at the normal DMA buffers, with the last frame going to the normal buffers. It programmed each pair of quarters right after the previous frame's half-done interrupt for those quarters. Before each frame it filled both possible destinations of each quarter with a canary, and after the half it counted the canary words left in each.
+
+| Frame | Pointed at | Quarters 0–2 landed | Quarter 3 landed |
+|---|---|---|---|
+| 0, 2, 4 | test buffer | test buffer (0 canary words left of 1036800) | test buffer, except its last 512 words |
+| 1, 3, 5 | normal buffers | normal buffers | normal buffers, except the last 512 words |
+| 6 | normal buffers (restored) | normal buffers | normal buffers, except the last 512 words |
+
+- **Quarter 3:** its programmed length, 4149248 bytes, is the 4147200 bytes of frame data rounded up to 2 KiB. The card wrote only the frame data, so the 2 KiB tail kept its canary in whichever buffer it was pointed at. In each frame the other buffer was untouched.
+- **Addresses:** the test quarters started at T + 0, 0x3f4800, 0x7e9000 and 0xbdd800, so 2 KiB alignment is enough.
+- **Windows:** all four translation entries read `00000000:e0000000` (one 512 MiB window at 0xE0000000), and the test buffer's IOVA was 0xEE000000, inside it. The table was never written.
+- **Containment:**
+  - The 16.6 MB guard after the test quarters was untouched.
+  - After the restore, the test buffer stayed untouched, then and 1 s later.
+  - No `IO_PAGE_FAULT`, and no stray-DMA canary hit.
+
+So the card takes a new address for every frame and applies it to the next one. Zero-copy into app buffers can work on this card.
