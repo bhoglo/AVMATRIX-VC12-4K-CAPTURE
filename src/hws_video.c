@@ -387,6 +387,14 @@ static void hws_fill_pix(struct v4l2_pix_format *pix, const framegrabber_pixfmt_
 	pix->bytesperline = (pix->width * fmt->depth) >> 3;
 	pix->sizeimage = pix->height * pix->bytesperline;
 	pix->colorspace = V4L2_COLORSPACE_REC709;
+	/*
+	 * Measured: the card delivers full-range YCbCr (Y uses 1-254) with the
+	 * Switch 2 on every RGB Range setting (stage 4.5), so say so instead of
+	 * the default, which means limited range for YUV.
+	 */
+	pix->ycbcr_enc = V4L2_YCBCR_ENC_709;
+	pix->quantization = V4L2_QUANTIZATION_FULL_RANGE;
+	pix->xfer_func = V4L2_XFER_FUNC_709;
 	pix->priv = 0;
 }
 
