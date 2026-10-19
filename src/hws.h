@@ -366,6 +366,8 @@ struct hws_video{
 	bool					top_done;	/* the top half of the current frame is in frame_bufs */
 	int						frame_w, frame_h, frame_il;	/* geometry at the top half */
 	int						frame_len[4];	/* bytes in each DMA quarter */
+	bool					frame_hdcp;	/* HDCP was active at this frame's top half */
+	bool					hdcp_active;	/* last HDCP state the status thread logged */
 	//------------------------
 	struct v4l2_ctrl_handler ctrl_hdl;
 	struct v4l2_ctrl *ctrl_brightness;	/* cluster: brightness, contrast, saturation */
