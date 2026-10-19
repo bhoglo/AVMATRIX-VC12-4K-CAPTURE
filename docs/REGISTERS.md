@@ -41,7 +41,7 @@ The translation entries match the layout of the `AXIBAR2PCIEBAR_nU`/`nL` registe
 | 8 | R | Bit ch: HDCP detected. While it's set, Windows delivers a frame reading "HDCP Protection" instead of the video. | windows, mainline | 0 (Switch 2) |
 | 9 | W | A buffer size in 16-byte units. Windows writes 0x50000 (5 MiB) on FPGA version 122 and later. Mainline writes 1920 × 1080 × 2 / 16. This driver never writes it, so it holds its reset value. | windows, mainline | 0x00044000 (4.25 MiB) |
 | 16 + i | R/W | Buffer i's address as the card sees it: (i + 1) · 0x20000000 plus the low 29 bits of the bus address | driver, windows, mainline | |
-| 24 + i | R/W | HDMI audio ring address of buffer i, in the same form. The driver writes 24–27, but 25 and 26 read back 0, so the card seems to implement only 24 (one audio channel). | driver, windows | 25, 26: 0 |
+| 24 + i | R/W | HDMI audio ring address of buffer i, in the same form. The driver writes 24–27: 24 and 27 keep the value, but 25 and 26 read back 0, so 25 and 26 are probably other registers on this card (mainline names 25 a buffer base and 26 a DMA address). | driver, windows | 24, 27: as written; 25, 26: 0 |
 | 26 + ch | W | Mainline: per-channel DMA address, rewritten before every frame in its zero-copy path. On this card it falls inside the audio-address range above. | mainline | 0 |
 | 28 | W | Line-in audio ring address (PCI ID 8591 only) | windows | |
 | 32 + i | R | Bit 0: which half of buffer i the DMA engine is filling | driver, windows, mainline | toggles |

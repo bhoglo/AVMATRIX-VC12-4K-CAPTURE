@@ -428,6 +428,7 @@ struct hws_pcie_dev {
 	spinlock_t snap_lock;
 	struct hws_regsnap snaps[HWS_REGSNAPS];
 	u32 snap_next;
+	u32 canary_start[MAX_VID_CHANNELS];	/* first canary byte in each DMA buffer, 0 = none */
  	unsigned long audio_data[MAX_VID_CHANNELS];
  	struct tasklet_struct dpc_audio_tasklet[MAX_VID_CHANNELS];
 	//-----------------------------

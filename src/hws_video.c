@@ -30,6 +30,7 @@ static void InitVideoSys(struct hws_pcie_dev *pdx,int set);
 struct hwsvideo_buffer;
 static void hws_complete_buffer(struct hwsvideo_buffer *buf, enum vb2_buffer_state state);
 static void hws_snap_regs(struct hws_pcie_dev *pdx, char what, int en);
+static void hws_fill_canary(struct hws_pcie_dev *pdx);
 static bool hws_input_timeperframe(struct hws_pcie_dev *pdx, int ch, struct v4l2_fract *tpf);
 static void WRITE_REGISTER_ULONG(struct hws_pcie_dev *pdx,u32 RegisterOffset,u32 Value);
 static u32 READ_REGISTER_ULONG(struct hws_pcie_dev *pdx,u32 RegisterOffset);
@@ -4421,6 +4422,30 @@ static int  StartAudioCapture(struct hws_pcie_dev *pdx,int index)
 	return 0;
 }
 
+/*
+ * Fill the unused gap of each DMA buffer, between its quarter and the audio
+ * ring, with a known pattern; debugfs dma reports bytes the card changed
+ * there. The card should never write it, so changes are stray or oversized
+ * DMA writes (stage 3.5). Refilled at capture start and after the input
+ * size changes, since a smaller quarter exposes old frame data.
+ */
+#define HWS_CANARY 0xC0FFEE11u
+static void hws_fill_canary(struct hws_pcie_dev *pdx)
+{
+	int i, start, end = pdx->m_MaxHWVideoBufferSize - MAX_AUDIO_CAP_SIZE;
+
+	for (i = 0; i < pdx->m_nMaxChl && i < MAX_VID_CHANNELS; i++) {
+		pdx->canary_start[i] = 0;
+		if (!pdx->m_pbyVideoBuffer[i])
+			continue;
+		start = round_up(pdx->m_format[i].HLAF_SIZE, 64);
+		if (start >= end)
+			continue;
+		memset32((u32 *)(pdx->m_pbyVideoBuffer[i] + start), HWS_CANARY, (end - start) / 4);
+		pdx->canary_start[i] = start;
+	}
+}
+
 static int StartVideoCapture(struct hws_pcie_dev *pdx,int index)
 {
 	if(pdx->m_bVCapStarted[index]==1)
@@ -4438,6 +4463,7 @@ static int StartVideoCapture(struct hws_pcie_dev *pdx,int index)
 	//--------------------
 	pdx->m_VideoInfo[index].dwisRuning = 1;
 	pdx->video_toggle[index] = 0;	/* the first event is then a top half */
+	hws_fill_canary(pdx);
 	EnableVideoCapture(pdx,index,1);
 	return 0;
 }
@@ -5016,6 +5042,7 @@ static int ChangeVideoSize(struct hws_pcie_dev *pdx,int ch,int w,int h,int inter
 	WRITE_REGISTER_ULONG(pdx,(DWORD)(CBVS_IN_BUF_BASE2 + (1*PCIE_BARADDROFSIZE)), halfframeLength[1]); //Buffer 1 address
 	WRITE_REGISTER_ULONG(pdx,(DWORD)(CBVS_IN_BUF_BASE2 + (2*PCIE_BARADDROFSIZE)), halfframeLength[2]); //Buffer 1 address
 	WRITE_REGISTER_ULONG(pdx,(DWORD)(CBVS_IN_BUF_BASE2 + (3*PCIE_BARADDROFSIZE)), halfframeLength[3]); //Buffer 1 address
+	hws_fill_canary(pdx);
 	return 0;
 }
 
@@ -5555,6 +5582,28 @@ static int hws_dbg_dma_show(struct seq_file *m, void *unused)
 				   bus == (u64)pdx->m_pbyAudio_phys[i] ? "" : "  MISMATCH");
 		else
 			seq_printf(m, "  audio register %08x -> outside the windows\n", areg);
+		if (i < MAX_VID_CHANNELS && pdx->canary_start[i]) {
+			u32 *c = (u32 *)(pdx->m_pbyVideoBuffer[i] + pdx->canary_start[i]);
+			int words = (pdx->m_MaxHWVideoBufferSize - MAX_AUDIO_CAP_SIZE - pdx->canary_start[i]) / 4;
+			int k, changed = 0, lo_k = -1, hi_k = -1;
+
+			for (k = 0; k < words; k++) {
+				if (READ_ONCE(c[k]) != HWS_CANARY) {
+					changed++;
+					if (lo_k < 0)
+						lo_k = k;
+					hi_k = k;
+				}
+			}
+			if (!changed)
+				seq_printf(m, "  gap %#x-%#x: untouched\n", pdx->canary_start[i],
+					   pdx->m_MaxHWVideoBufferSize - MAX_AUDIO_CAP_SIZE);
+			else
+				seq_printf(m, "  gap %#x-%#x: %d words written, IOVA %llx-%llx  STRAY WRITE\n",
+					   pdx->canary_start[i], pdx->m_MaxHWVideoBufferSize - MAX_AUDIO_CAP_SIZE, changed,
+					   (u64)pdx->m_pbyVideo_phys[i] + pdx->canary_start[i] + lo_k * 4,
+					   (u64)pdx->m_pbyVideo_phys[i] + pdx->canary_start[i] + hi_k * 4 + 3);
+		}
 	}
 	return 0;
 }
