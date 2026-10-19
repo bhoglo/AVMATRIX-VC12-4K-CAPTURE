@@ -84,4 +84,23 @@ Driver `5af2e2b`, module srcversion `3A9DCD14A99FB5E1BFA5477`, after a reboot on
 | OBS | Shows the DV timings list and the controls |
 | Brightness, contrast, saturation | Change the image (operator) and read back in register 91 |
 | Hue | Register 91 reads back the written value, but the image does not change. The control is removed and the byte stays at 128 (commit after `5af2e2b`). OBS had saved hue = 0 from the old driver, whose controls did nothing, and re-applied it to the hardware. |
-| Source-change event, `v4l2-compliance`, `S_PARM` 30 fps, stage 1 regression runs | Pending (need OBS closed and a resolution switch) |
+| Source-change events (operator switched the Switch 2 to 1080p) | Signal loss raised an event about 1 s later (QUERY: `ENOLINK`, input: no signal); the 1080p lock raised another about 0.5 s later (1920×1080, 148.5 MHz, 60.00 fps). OBS followed with its DV Timing set to 1920×1080. OBS keeps its own DV Timing selection, so it must match the console's output. |
+
+### After the fixes found during stage 2 (driver `f3da7f7`, srcversion `F0800C600D65554C0E507E3`)
+
+Testing found and fixed four more problems:
+- **Release ordering:** a closing handle was counted closed before its queue was released, so a new opener could reset the format and then get `EBUSY`.
+- **DV timings filter:** enumerated timings the driver could not deliver were rejected by `S_DV_TIMINGS`; interlaced ones are now excluded too, while the live input's own timings are always accepted.
+- **Frame-rate measurement:** it read a missed frame-end interrupt as a lower rate (60 → 59 → 58 fps across short captures), so `QUERY_DV_TIMINGS` synthesized odd timings and `v4l2-ctl` reset the format.
+- **Suspend and resume (2.7):** after S3 the card's registers were wiped and a running capture stayed dead.
+
+| Check | Result |
+|---|---|
+| Frame delivery (`run-baseline.sh`) | 60.00 fps in all three runs, no bursts or gaps; 4K native 120 / 120 unique, delta stdev 0.00 ms |
+| Back-to-back 1080p runs (4 and 1 buffers, ×2) | Measured rate stays 60.00; format stays 1920×1080 every run (before the fix: 59, 58 fps and 4K frames) |
+| `S_PARM` 30 on a 60 fps source | 30.00 fps, deltas 33.33 ms, stdev 0.00; skipped frames show as sequence gaps |
+| `v4l2-compliance` (no `-s`) | **47 / 48** (baseline: deadlock). Only `reqbufs != EBUSY` (multi-reader by design) fails. One warning: no `V4L2_CID_DV_RX_POWER_PRESENT` control. The blocking-wait test passes. |
+| Suspend with a capture running | The kernel logged `resumed, card re-initialised`, and the same `v4l2-ctl` capture continued at 60 fps after the wake (4976 → 5155 frames in 3 s). No reboot, no `IO_PAGE_FAULT`. |
+| Status thread, IOMMU faults | `I` state; 0 faults |
+
+Correction to the first suspend diagnosis: after the unplanned suspend, starting a new stream did not recover the card. That was because the Switch 2 was not sending a signal at the time (status register 5 read 0); the card appears to ignore register writes without HDMI input. Once the console was restarted, the existing re-init on stream start recovered it. The suspend callbacks are still needed for captures that are running across a suspend, as the test above shows.
