@@ -152,6 +152,8 @@ This stage needs vendor binaries that aren't public. AVMatrix publishes no SDK o
 - So the vendor driver offers no route to the EDID, InfoFrame, audio-format and status candidates below. Only the receiver chip's datasheet or a firmware image could.
 - What remains is PCB photos and, if one turns up, a firmware image.
 
+**Status (2026-10-19): chips identified (5.1).** Photos give an Artix-7 XC7A35T FPGA, a GSCoolink GSV2011 HDMI 2.0 transceiver, a Macronix MX25L3233F 4 MiB SPI flash, an unmarked 48-pin microcontroller, and no DRAM ([REGISTERS.md](REGISTERS.md#hardware)). The EDID, InfoFrame, HDR, audio-format and colour-range candidates belong to the GSV2011, configured by the microcontroller. The Windows driver gives the host no path to them, so they are **no-go** for this driver. Reading them would need the GSV2011 register map, which isn't public, and a host path into the microcontroller, which doesn't exist. The flash holds the FPGA bitstream, which the IDCODE alone already identifies, so a dump (5.5) adds little. Status, firmware build and FPGA temperature have no known register either. That leaves exact timings and output modes only through further register probing.
+
 **Why the Windows driver first.**
 - The card is driven only through BAR0 registers and DMA, so the vendor's Windows driver is the fullest record of what the registers do.
 - This driver descends from it ([REGISTERS.md](REGISTERS.md#vendor-ancestry)), so its functions should map onto ours closely.

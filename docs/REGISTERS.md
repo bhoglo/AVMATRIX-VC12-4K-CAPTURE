@@ -21,7 +21,7 @@ All registers are 32 bits wide, in BAR0.
 | 0x148 | — | Named "bridge enable". The write to it is commented out. | driver |
 | 0x208 + 8·i | R/W | Address-translation entry i. The upper 32 bits of a host bus address go at +0, its 512 MiB-aligned lower part at +4. The entry maps the card's window i, which starts at (i + 1) · 0x20000000, onto host memory. | driver, windows, mainline |
 
-The translation entries match the layout of the `AXIBAR2PCIEBAR_nU`/`nL` registers in AMD/Xilinx's AXI Bridge for PCI Express (PG194, offsets 0x208–0x234). Register 0x144 matches the bridge's PHY status register at the same offset: link rate in bit 0, width in bits 2:1. Together they make an AMD/Xilinx FPGA with that bridge very likely. Reading the chip markings would confirm it.
+The translation entries match the layout of the `AXIBAR2PCIEBAR_nU`/`nL` registers in AMD/Xilinx's AXI Bridge for PCI Express (PG194, offsets 0x208–0x234). Register 0x144 matches the bridge's PHY status register at the same offset: link rate in bit 0, width in bits 2:1. The chip markings confirm it: the FPGA is an AMD/Xilinx Artix-7 XC7A35T (see [Hardware](#hardware)).
 
 ## Capture block
 
@@ -87,6 +87,28 @@ What it shows beyond the table above:
 - **Status polling.** A system thread polls the input every 50 ms; this driver polls every 250 ms. With no signal, every tenth poll wakes each open stream to deliver a "No Video" frame. The same thread tears the device down after a surprise removal.
 - **Interrupts.** Windows handles only channel 0. In its status poll and interrupt handler, it reads back every register it writes and treats 0xFFFFFFFF as a removed card.
 - **Absent.** No EDID, I²C, InfoFrame, HDR, audio-format or temperature access. Every BAR0 offset the driver uses is in the tables above.
+
+## Hardware
+
+Read from photos of both sides of a VC12-4K with the heatsink off (PCB `VC12-4K_V1.1`, dated 2023-10-24, week 2344; label serial VC12D230911002), 2026-10-19:
+
+| Part | Marking | Role |
+|---|---|---|
+| FPGA | Xilinx Artix-7 XC7A35T, FGG484, date code 2313 | PCIe bridge, DMA engines, the capture block registers |
+| HDMI chip | GSCoolink GSV2011, date code 2302 | HDMI 2.0 transceiver between the HDMI in and loop-out connectors and the FPGA |
+| SPI flash | Macronix MX25L3233F (32 Mbit, 4 MiB), on the back | Almost certainly the FPGA configuration bitstream |
+| 48-pin QFP | No visible marking | Probably a microcontroller that configures the GSV2011 |
+| SOIC-8 by the QFP | Not legible in the photos | Unknown; possibly the microcontroller's memory or an EEPROM |
+| SOIC-8, back, near the edge connector | No visible marking | Unknown |
+| Small QFN/SOT parts | MPS and others | Power regulators |
+
+No DRAM is visible on either side.
+
+What follows from the parts, as inferences:
+- **The FPGA can't buffer frames.** The XC7A35T has 1.8 Mbit of block RAM, about 28 lines of 4K YUYV, and there is no external memory. Every frame goes straight to host memory, which is why the frame arrives as four quarters through four DMA buffers. A scaler that only needs line buffers would fit; one that needs whole frames would not.
+- **HDMI reaches the FPGA as a parallel bus.** The XC7A35T has 4 GTP transceivers, and PCIe Gen2 x4 uses all of them. So HDMI can't be terminated in the FPGA: the GSV2011 receives it and passes video to the FPGA over the many parallel traces between them. A reseller page describes the GSV1011, its pin-compatible HDMI 1.4 sibling, as having an LVDS/TTL video bus and I²S/SPDIF/TDM audio.
+- **EDID, InfoFrames, HDCP and colour handling live in the GSV2011.** The same page lists colour-space conversion, deinterlacing and down-conversion for the GSV1011. They are configured by whatever programs the GSV2011, probably the unmarked microcontroller, and not by the host. The Windows driver has no I²C or EDID access, and no host register for these was found. The fixed full-range output (stage 4.5) and the 1920×540 interlaced field format are presumably set there.
+- **The GSV2011 has no public datasheet.**
 
 ## Vendor ancestry
 
