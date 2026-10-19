@@ -374,3 +374,12 @@ PS5 at 3840×2160p59.94, OBS closed, IOMMU `DMA-FQ`. `tests/zctest.sh` ran 600 f
 - **Register 9:**
   - read 0x3F500 during 4K capture: the largest quarter, 4149248 bytes;
   - read 0xFE00 before the first stream: the 1080p default lengths set at load.
+
+### 4.4: zero-copy, round 2 with OBS (driver `821f2d1`, `zero_copy=1` set before OBS started)
+
+| Check | Result |
+|---|---|
+| OBS at 3840×2160 | Picture and console audio normal. 303 zero-copy frames per 5 s (60 fps); IRQ thread 0 ms CPU per 5 s, against about 270 ms on the copy path. OBS's consumer had no buffer missing. |
+| PS5 to 1080p and back to 4K | Zero-copy stepped aside for the switch and came back by itself at 4K, again with 0 ms CPU. One zero-copy frame completed with an error (the frame in flight at a switch); no late writes. The canary logged two 2 KiB blocks in DMA buffer 0, at 0xfe000 and 0x3f5000. Those are register 9 × 16 for the 1080p and 4K quarters, the new cap. Before register 9 followed the quarter size, the same switches wrote runs up to 0x47d7ff. |
+| Suspend and resume with OBS open | Card re-initialised and the picture came back. Zero-copy resumed with no failures or late writes. OBS's consumer counted 93 frames with no buffer queued, once, right after the wake-up, before OBS had re-queued its buffers. |
+| Kernel log | No `IO_PAGE_FAULT`, no warnings |
