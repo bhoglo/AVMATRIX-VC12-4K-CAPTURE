@@ -19,7 +19,9 @@ w=${1:?width} h=${2:?height} want=${3:-40}
 OUT=$(mktemp -d)
 trap '[ -n "${LOG:-}" ] && [ -e "$OUT/cap.log" ] && cp "$OUT/cap.log" "$LOG"; rm -rf "$OUT"' EXIT
 
-pgrep -x obs >/dev/null && { echo "close OBS first"; exit 1; }
+# OBS may stay open to show the source (WITH_OBS=1). It then usually holds
+# the zero-copy buffers and this capture takes the copy path.
+[ -z "${WITH_OBS:-}" ] && pgrep -x obs >/dev/null && { echo "close OBS first, or set WITH_OBS=1"; exit 1; }
 st() { sudo -n cat "$DBG/status"; }
 st | grep -q "engine restarts" || { echo "the loaded driver has no restart counter; load 1.0.0.230324.6.5 or later"; exit 1; }
 count() { journalctl -k -b --no-pager | grep -c "$1" || true; }
