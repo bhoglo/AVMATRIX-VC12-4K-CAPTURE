@@ -499,3 +499,18 @@ The probe build ran on branch `probe/dma-stop`; that code is debug-only and not 
 - **Meaning:** once the cleared enable bit is read back, the card writes nothing more. It finishes the 2 KiB burst in progress before that point. Register 0 bit 3 doesn't show DMA in progress, so waiting on it would prove nothing. `hws_video_quiesce()` relies on the readback and adds a short pause as margin.
 - No BUG, WARNING or `IO_PAGE_FAULT`.
 - **`hws_video_quiesce()`, driver `cc357eb` (DKMS `1.0.0.230324.6.3`, srcversion `B29F5E369590713DA901773`):** 4K capture 60.00 fps, 300 of 300 unique, no gaps; a zero-copy stream across one S3 cycle (`rtcwake`) delivered 120 frames in the 2 s after resume; unbind with that stream and `arecord` open took 20 ms, both apps exited by themselves, and capture worked after the bind (zero-copy 0 failed). No BUG, WARNING or `IO_PAGE_FAULT`.
+
+## 6.8: input-size change with zero-copy active
+
+Driver `2399b61` (DKMS `1.0.0.230324.6.5`, srcversion `0C2CDA11DC242C44B3B5C8C`) on 7.2.10, `zero_copy=1 debug_dma=1`. The operator switched the Switch 2's output between 1920×1080p60 and 3840×2160p60 from its settings menu, with OBS showing the picture. `tests/switchtest.sh` ran a second `v4l2-ctl` stream through `framecheck.py` and logged each size change the driver saw. The debugfs counter "engine restarts for a size change" counts the restarts the fix makes.
+
+| Run | Zero-copy consumer | Size changes | Engine restarts | Frame check | Kernel log |
+|---|---|---|---|---|---|
+| B: capture 3840×2160, OBS closed for the first part | the `v4l2-ctl` stream | 20 checked (10 each way), then 20 more with OBS capturing 4K | 10, then 20 in total | 0 sequence repeats once error buffers are left out (see below) | 0 `IO_PAGE_FAULT`, 0 stray writes, no WARNING or BUG |
+| A: capture 1920×1080 | OBS at 1920×1080 | 40 (20 each way) | 20, one for each change up to 4K | 9,140 frames, 0 sequence repeats, 0 error buffers, 12 sequence gaps (frames lost at switches) | 0 `IO_PAGE_FAULT`, **1 stray write**, no WARNING or BUG |
+
+- **The fix ran where it should.** Restarts happen only when the input changes away from the size zero-copy is capturing. In run A that is every change from 1080p up to 4K: the change where the old code could have overrun a 1080p buffer. None of the 20 caused a fault or a write outside the driver's buffers.
+- **The stray write is on the copy path, not zero-copy.** It landed in the driver's own DMA buffer 0 at offset 0xfe000–0x1057ff (30 KiB), 180 ms after the 1080p picture returned from a 4K→1080p change (the 18th). At that moment the input was 4K and OBS 1080p, so zero-copy wasn't in use and the old path ran: new lengths and a canary refill with the engine still writing a 4K quarter. The card wrote 30 KiB past the new 1080p length and then stopped. The buffer is sized for 4K, so nothing outside it was touched. This matches the stage 4 canary hit at a cable switch.
+- **Transient size.** Change 38 read 1920×2160 for one poll before 1920×1080. The driver accepted it and moved on.
+- **Recovery:** after each change the frame counter moved again within 18–93 ms (no-signal frames count).
+- **Tooling fixes found by run B:** `framecheck.py` counted buffers dequeued with the error flag as frames (zero timestamp and sequence), and `switchtest.sh` counted each "no usable signal" as a size change. Both fixed in `144057f`.
