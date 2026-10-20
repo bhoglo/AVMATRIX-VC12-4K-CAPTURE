@@ -422,7 +422,7 @@ Run on 2026-10-19 with OBS closed, the Switch 2 sending 3840×2160p60 and `zero_
 | 9.5-minute 4K capture (34,200 frames) | 59.999 fps, no sequence gaps, deltas 16.45–16.88 ms, no frame lost; 34,197 zero-copy frames, 0 failed, 0 late writes; other interrupt sources 0; late copies 0 |
 
 - **Unique-frame counts in `zctest.sh`:** the second run gave 401 of 600 unique frames in every case, including the copy path with zero-copy off. The source was repeating frames at that point. The per-sequence comparison shows the two consumers receive identical frames, so this isn't a driver effect.
-- **Buffers outside the window:** debugfs counted 174 during the `zctest.sh` runs (0 before them). Those buffers used the copy path, which is the designed fallback, but zero-copy round 1 saw none. Check after a fresh boot whether the IOVA window fills up during many start/stop cycles (6.17).
+- **Buffers outside the window:** debugfs counted 174 during the `zctest.sh` runs (0 before them). Those buffers used the copy path, which is the designed fallback, but zero-copy round 1 saw none. The debug-kernel pass below shows it comes from the 100 start/stop cycles.
 
 ## Stage 6: unbind test (6.4)
 
@@ -433,3 +433,22 @@ Run on 2026-10-19 with OBS closed. Commands: `echo 0000:0b:00.0 | sudo tee /sys/
 - **Driver `5815209`** (DKMS `1.0.0.230324.6.1`, srcversion `6A47E2DE4A0F57F50595CB5`, loaded with `modprobe` while the card was unbound, no reboot): with both streams running, `v4l2-ctl` now gets `VIDIOC_DQBUF: Input/output error` and exits by itself.
 - **20 cycles** of bind, start both streams, wait 1–2 s, unbind, on `5815209`: all 20 unbinds returned, every app exited by itself within 1 s, and the kernel log had no BUG, WARNING, oops, refcount, hung-task or `IO_PAGE_FAULT` line. After the last bind: 4K capture at 60.00 fps, 300 of 300 unique, no gaps, and `arecord` records. The IRQ placement helper (H.2) re-pinned IRQ 202 to CPUs 8–15 and 24–31 after each bind.
 - **Not covered:** KASAN and kmemleak (not in this kernel; 6.16).
+
+## Stage 6: debug-kernel pass (6.16)
+
+The repositories carry no debug kernel, so one was built on 2026-10-19: `7.2.10-hwsdebug`, from the Nobara source package (the same CachyOS tree and Nobara patches as `7.2.10-200`), with the running config cut down by `localmodconfig`, plus `CONFIG_KASAN` (generic, inline), `CONFIG_DEBUG_KMEMLEAK`, `CONFIG_PROVE_LOCKING`, `CONFIG_DEBUG_ATOMIC_SLEEP` and `CONFIG_DMA_API_DEBUG`. It was booted once with `grub2-reboot`. Driver `5815209` (DKMS `1.0.0.230324.6.1`), `zero_copy=1`, OBS closed.
+
+| Check | Result |
+|---|---|
+| Boot and probe | the card probed normally; no report naming the driver |
+| 20 unbind/bind cycles with a 4K zero-copy stream and `arecord` open | all apps exited by themselves; 300 frames after the last bind |
+| 2,000 ALSA start/stop cycles | none failed |
+| `tests/zctest.sh` | every case passed; 0 failed, 0 late writes; 174 buffers outside the window during the start/stop cycles (see below); no `IO_PAGE_FAULT` or WARNING |
+| `v4l2-compliance -s` | 58 of 59, the same by-design failure |
+| KASAN, atomic-sleep and lockdep reports naming the driver | 0 |
+| DMA API reports naming the driver | 0 |
+| kmemleak, after the unbind cycles and again after the other tests | 0 unreferenced objects |
+
+- **Reports from elsewhere:** a suspicious-RCU warning in `kernel/sched/fair.c` 1.5 s into boot, before the driver loads, and a DMA API warning from `udmabuf`, used by `kwin_wayland`. Neither involves this driver.
+- **Buffers outside the window:** 0 through the four streaming cases, then 174 during the 100 zero-copy start/stop cycles, the same count as on the normal kernel. So it reproduces on a fresh boot and comes from rapid open, stream, close cycles. Those frames used the copy path, the designed fallback. Likely cause, inferred and not measured: with the IOMMU in `DMA-FQ` mode, freed addresses are reused only after the flush queue empties, so quick reallocations get lower addresses, below the card's 512 MiB window. 6.17 checks this.
+- **Not covered here:** the suspend tests, since the debug kernel was booted only once.
