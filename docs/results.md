@@ -868,3 +868,12 @@ QEMU/KVM with OVMF's Secure Boot firmware and Microsoft keys (`OVMF_CODE.secboot
 Fixed in `eb6b4eb`: step 4 installs `v4l-utils` and `alsa-utils` first; the Ubuntu and Debian command starts with `apt update`; step 4 says the driver loads at boot with the card fitted; and the installer's message for a reinstall of the loaded version no longer calls it "older".
 
 Still open for 7.2: someone who hasn't worked on the driver follows the README on a fresh machine.
+
+## 7.8: release 1.1.0
+
+Tag `v1.1.0` on `59b28c6` (`release/packaging`), pushed to the fork; `src/dkms.conf` has `PACKAGE_VERSION=1.1.0`.
+
+- **CI on the tagged commit:** GitHub Actions run 39461686659 passed: the module built for Fedora, Arch, Ubuntu 24.04 and 22.04, Debian 12, CentOS Stream 9 and 10, and AlmaLinux 9 and 10, and the checks job (shellcheck, the Python check, the unit tests) passed.
+- **Install in the 7.1 VMs** (fresh Fedora 44, Ubuntu 24.04 and Arch, packages as the README gives them, a `git archive` of the tagged tree): `install.sh` installed 1.1.0 on every kernel with headers; Arch loaded it, and on the Fedora and Ubuntu cloud images it named the missing kernel modules, as documented. `uninstall.sh` left no DKMS entry and no module. After the tag was pushed, the README's own command, `git clone --branch v1.1.0 …`, then `./install.sh`, worked on Arch.
+- `SECURITY.md` points at GitHub's private vulnerability reporting, which the operator enabled on the fork (the API reports `"enabled": true`).
+- The VMs and their images were deleted afterwards.
