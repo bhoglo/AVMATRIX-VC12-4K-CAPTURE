@@ -734,3 +734,25 @@ Driver `7784170` (DKMS `1.0.0.230324.6.7`), `debug_dma=0` (the default) and `zer
 | 1 | 4,809 | 1 µs | 4 µs | 16 µs | 32 µs | 0 |
 
 No difference beyond run-to-run noise: the canary scan, now outside `cap_lock`, doesn't delay the IRQ thread. No late copies or `IO_PAGE_FAULT` during the eight runs. Putting things back afterwards lost the GPU (6.21, third loss): the driver was reloaded with its defaults at 08:06:58, HDMI-A-2 was switched from 1080p240 to 2160p60 with nothing capturing, and at 08:07:02 the GPU dropped off the bus.
+
+## 6.18: dead code removed
+
+Four commits on `fix/release-audit`: `aebb731` (the per-device vb2 queue and its ops), `be1e6ac` (unused fields, tables, ioctl numbers and locals; the register read-backs in `InitVideoSys()` stay as plain reads), `9ce0184` (thirteen `#if 0` and `#if 1` blocks, resolved by script) and `2d4e62a` (three unused includes and seventeen repeated ones). `hws_video.c` and `hws.h` lose about 560 lines. W=1 warnings on 7.2.10: 30 before, 23 after; it builds without errors on 7.2.6, 7.2.9 and 7.2.10.
+
+Checks on that build (`insmod` of a fresh build, then DKMS `1.0.0.230324.6.9`, srcversion `0CD4DA1B1E0DF0597BFDFE4` on all three kernels), the PC's GPU at 3840×2160p60 as the source, no mode changes:
+
+| Check | Result |
+|---|---|
+| `v4l2-compliance -s` | 58 of 59, the by-design `reqbufs != EBUSY` |
+| DV timings, inputs, `G_PARM`, controls | 3840×2160p60 594 MHz; `HDMI` ok; 60/1; brightness, contrast, saturation |
+| `S_PARM` 30 in the streaming handle | 30.00 fps, deltas 33.33 ms |
+| `tests/zctest.sh` | every case 60.00 fps, 0 gaps, 0 repeats, 0 error buffers; zero-copy 0 failed, 0 late writes; 100 start/stop cycles added nothing to the window count |
+| Audio, alternating 1 kHz and 500 Hz captures (6.20) | each starts with its own tone; 96,000 frames in 2.06 s |
+| Unbind with `v4l2-ctl` and `arecord` open | 16 ms, both exited by themselves; 120 of 120 frames after the bind |
+| Kernel log | no `IO_PAGE_FAULT`, WARNING, BUG or GPU loss |
+
+The window count stood at 232 before `zctest.sh` began: `v4l2-compliance -s` runs many quick buffer cycles, the `DMA-FQ` effect recorded in 6.17.
+
+### Build output in the branch, and a stale DKMS module
+
+`7784170` staged `src/` with `git add -A` and so committed the kbuild output of a local build (`.o`, `.ko`, `.cmd`, `.mod.c`); `aeafbaa` and `6432897` updated it. Upstream tracks none of these. `tools/dkms-install.sh` packed all of `src/` from git, so the objects reached DKMS, and for DKMS `1.0.0.230324.6.8` kbuild reused the committed `hws_video.o` on 7.2.10 instead of compiling: that module held the code from `6432897` (it still had the removed queue code; srcversion `FBA939D1AAC60E8C53BE29D`, unlike the other kernels). Earlier installs weren't affected in practice, since the committed objects matched their commit's source (6.7 had the same srcversion on every kernel). `b5c3a3d` removes the build output from the index and makes the installer take only `Makefile`, `dkms.conf` and the three source files. 6.8 was removed from DKMS and 6.9 installed; all its modules have the same srcversion and none has the removed code. When the series is split into PRs, those three commits must leave out their `src/` build output.
