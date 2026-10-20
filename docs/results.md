@@ -668,14 +668,15 @@ The GPU (Radeon RX 9070, `amdgpu 0000:03:00.0`) dropped off the PCIe bus twice, 
 |---|---|---|---|---|
 | 2026-10-19 22:58:47 | `7784170` (DKMS 6.7), `zero_copy=1` | OBS at 1280×720, zero-copy | 1 | 720p → 2160p60 |
 | 2026-10-20 07:47:56 | `6432897`, `zero_copy=1 debug_dma=0` | `v4l2-ctl` at 1920×1080 | about 17, alternating 1080p60 and 2160p60 every 6 s (the 6.10 check) | 2160p60 → 1080p60 |
+| 2026-10-20 08:07:02 | DKMS 6.7, reloaded with defaults 3 s before | **nothing** | 1 | 1080p240 → 2160p60 |
 
 What didn't lose the GPU: about 66 mode changes in the 6.17 matrix runs (driver 6.6 and 6.7, normal, `iommu=pt` and IOMMU-off boots), where each mode was set **before** a capture started; 120 resolution changes from the Switch 2 during capture (6.8); the 8-hour session (no mode changes). The card sits behind the chipset (00:02.1) and the GPU on a CPU root port (00:01.1), in different IOMMU groups; neither loss came with an AER error or an IOMMU fault from the card.
 
-Two explanations fit and the runs so far can't tell them apart:
+The third loss came with nothing capturing, so capture isn't required; it followed a driver reload by about 3 s (the card's HDMI receiver is re-initialised at probe). The ~66 safe changes had no reload just before. Explanations that still fit:
 1. The engine restart that 6.8 added for every input-size change while capturing (`bf3ede3`) makes the card's HDMI receiver react in a way that hangs the GPU's display engine mid-modeset.
-2. A GPU mode change while the card's receiver is capturing hangs the GPU regardless of the driver version (receiver or amdgpu behaviour).
+2. A GPU mode change on the output feeding this card can hang the GPU, more often when the card's receiver is busy (capturing) or settling (just re-initialised): receiver or amdgpu behaviour, independent of the driver version.
 
-A run with a driver from before `bf3ede3` (DKMS 6.3), making GPU mode changes while capturing, would decide it; it risks another lockup, so it waits for the operator. Until then no mode changes are made on the GPU output while capturing, and the 6.10 mode-change check uses the Switch 2.
+A run with a driver from before `bf3ede3` (DKMS 6.3), making GPU mode changes while capturing, would decide it; it risks another lockup, so it waits for the operator. Until then no mode changes are made on the GPU output feeding the card at all; `tests/modematrix.sh` refuses to run without `HWS_ALLOW_GPU_MODESET=1`.
 
 ### Not done
 
@@ -732,4 +733,4 @@ Driver `7784170` (DKMS `1.0.0.230324.6.7`), `debug_dma=0` (the default) and `zer
 | 0 | 4,810 | 1 µs | 4 µs | 16 µs | 28 µs | 0 |
 | 1 | 4,809 | 1 µs | 4 µs | 16 µs | 32 µs | 0 |
 
-No difference beyond run-to-run noise: the canary scan, now outside `cap_lock`, doesn't delay the IRQ thread. No late copies, no `IO_PAGE_FAULT` or GPU loss; the output went back to 3840×2160p60 with nothing capturing, and the driver to its defaults.
+No difference beyond run-to-run noise: the canary scan, now outside `cap_lock`, doesn't delay the IRQ thread. No late copies or `IO_PAGE_FAULT` during the eight runs. Putting things back afterwards lost the GPU (6.21, third loss): the driver was reloaded with its defaults at 08:06:58, HDMI-A-2 was switched from 1080p240 to 2160p60 with nothing capturing, and at 08:07:02 the GPU dropped off the bus.
