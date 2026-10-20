@@ -22,7 +22,7 @@ hint() {
     case " $os " in
         *" fedora "*|*" rhel "*|*" centos "*) echo "sudo dnf install dkms gcc make kernel-devel-$(uname -r)" ;;
         *" debian "*|*" ubuntu "*) echo "sudo apt install dkms gcc make linux-headers-$(uname -r)" ;;
-        *" arch "*) echo "sudo pacman -S dkms gcc make linux-headers" ;;
+        *" arch "*) echo "sudo pacman -Syu dkms gcc make linux-headers, then reboot if the kernel was updated" ;;
         *) echo "install dkms, gcc, make and the headers for kernel $(uname -r)" ;;
     esac
 }
@@ -86,7 +86,22 @@ EOF
     fi
 fi
 
-if [ -d "/sys/module/$MODULE" ]; then
+# Minimal kernels (cloud and server images) leave out the media and sound
+# modules the driver needs.
+missing=()
+for m in videodev videobuf2-vmalloc snd-pcm; do
+    modinfo "$m" >/dev/null 2>&1 || missing+=("$m")
+done
+if [ ${#missing[@]} -gt 0 ]; then
+    echo
+    echo "This kernel lacks modules the driver needs: ${missing[*]}. Install them:"
+    case " $os " in
+        *" fedora "*|*" rhel "*|*" centos "*) echo "  sudo dnf install kernel-modules-$(uname -r)" ;;
+        *" ubuntu "*) echo "  sudo apt install linux-modules-extra-$(uname -r)" ;;
+        *) echo "  the kernel's full module package for $(uname -r)" ;;
+    esac
+    echo "then run: sudo modprobe $MODULE"
+elif [ -d "/sys/module/$MODULE" ]; then
     echo "An older version of the driver is loaded. Reboot to use $VER."
 elif modprobe "$MODULE" 2>/dev/null; then
     echo "Loaded. Check with: v4l2-ctl --list-devices; arecord -l"
