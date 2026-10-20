@@ -6066,25 +6066,6 @@ static int irq_setup(struct hws_pcie_dev *lro, struct pci_dev *pdev)
 	return rc;
 }
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,5,0)
-static void enable_pcie_relaxed_ordering(struct pci_dev *dev)
-{
-	pcie_capability_set_word(dev, PCI_EXP_DEVCTL, PCI_EXP_DEVCTL_RELAX_EN);
-}
-#else
-static void __devinit enable_pcie_relaxed_ordering(struct pci_dev *dev)
-{
-	u16 v;
-	int pos;
-
-	pos = pci_pcie_cap(dev);
-	if (pos > 0) {
-		pci_read_config_word(dev, pos + PCI_EXP_DEVCTL, &v);
-		v |= PCI_EXP_DEVCTL_RELAX_EN;
-		pci_write_config_word(dev, pos + PCI_EXP_DEVCTL, v);
-	}
-}
-#endif
 //--------------------------------------
 static void InitVideoSys(struct hws_pcie_dev *pdx,int set)
 {
@@ -6451,7 +6432,6 @@ static int hws_probe(struct pci_dev *pdev, const struct pci_device_id *pci_id)
 		dev_err(&pdev->dev, "pci_enable_device failed: %d\n", ret);
 		goto err_free;
 	}
-	enable_pcie_relaxed_ordering(pdev);
 	pci_set_master(pdev);
 	probe_scan_for_msi(gdev, pdev);	/* falls back to INTx */
 #ifdef CONFIG_ARCH_TI816X
