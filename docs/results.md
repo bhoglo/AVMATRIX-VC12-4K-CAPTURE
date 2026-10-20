@@ -667,3 +667,15 @@ During setup, with OBS capturing at 1280×720, `kscreen-doctor` switched HDMI-A-
 ### Not done
 
 - **A second, non-X3D machine:** none available.
+
+## 6.11: a frame repeated to the zero-copy consumer
+
+Driver `fix/release-audit` with a debug knob (commit below), `zero_copy=1 debug_dma=1`, 3840×2160p60 from the PC's GPU. Writing K to debugfs `stale_bottom_halves` makes the K-th bottom half from then on take the stale-half path. On a fresh stream, K=3 lands on the frame where zero-copy picks its first buffer: the zero-copy consumer then holds a copy buffer when the next frame arrives in its zero-copy buffer. 60-frame captures through `framecheck.py`:
+
+| Build | K | Runs | Sequence repeats | Error buffers | "held copy buffers failed" |
+|---|---|---|---|---|---|
+| 6.11 fix removed (test build, not committed) | 3 | 5 | 1 in each | 0 | — |
+| with the fix | 3 | 5 | 0 | 1 in each | +1 in each |
+| with the fix | 1, 2, 4–10 | 1 each | 0 | 0 or 1 | 0 (the path isn't reached) |
+
+The knob reproduces LINUX-014 and the fix removes the repeat: the held buffer completes with an error instead. A stale bottom half every 0.3 s during a running zero-copy stream (40 of them over 900 frames) gave 40 sequence gaps, 40 error buffers and no repeats. The 6.8 switch runs had 0 repeats as well. No `IO_PAGE_FAULT`, WARNING or BUG.
