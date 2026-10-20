@@ -679,3 +679,23 @@ Driver `fix/release-audit` with a debug knob (commit below), `zero_copy=1 debug_
 | with the fix | 1, 2, 4–10 | 1 each | 0 | 0 or 1 | 0 (the path isn't reached) |
 
 The knob reproduces LINUX-014 and the fix removes the repeat: the held buffer completes with an error instead. A stale bottom half every 0.3 s during a running zero-copy stream (40 of them over 900 frames) gave 40 sequence gaps, 40 error buffers and no repeats. The 6.8 switch runs had 0 repeats as well. No `IO_PAGE_FAULT`, WARNING or BUG.
+
+## 6.15: late copies under load
+
+Driver `6432897` (built from the branch, `insmod`), `zero_copy=0` so every frame takes the copy path, the PC's GPU as the source, OBS closed. Captures through `framecheck.py`; "late" is debugfs "copy path: frames failed because a copy ended late", "card lost" the driver's dropped-frame count. `stress-ng` isn't installed, so a small C program loaded the CPUs instead.
+
+| Input | Load | Delivered | Gaps | Repeats | Error buffers | Late | Card lost |
+|---|---|---|---|---|---|---|---|
+| 3840×2160p60, 600 frames | none | 60.00 fps | 0 | 0 | 0 | 0 | 0 |
+| 3840×2160p60 | 32 spinning threads | 17.68 fps | 1,434 | 0 | 0 | 0 | 0 |
+| 3840×2160p60 | 32 threads copying 64 MiB buffers | 17.80 fps | 1,420 | 0 | 0 | 0 | 0 |
+| 1920×1080p240, 2,400 frames | none | 239.96 fps | 0 | 0 | 0 | 0 | 0 |
+| 1920×1080p240 | 32 spinning threads | 48.29 fps | 9,523 | 0 | 0 | 0 | 0 |
+| 1920×1080p240 | 32 memory-copy threads | 39.74 fps | 12,086 | 0 | 0 | 0 | 0 |
+| 3840×2160p60, 600 frames | SCHED_FIFO 60 bursts on CPU 31: 10 ms busy, 20 ms idle | 50.41 fps | 114 | 0 | 115 | 115 | 0 |
+| 1920×1080p240, 2,400 frames | SCHED_FIFO 60 bursts on CPU 31: 3 ms busy, 7 ms idle | 178.72 fps | 822 | 0 | 683 | 683 | 139 |
+
+- **Ordinary load doesn't make copies late.** The IRQ thread runs at SCHED_FIFO 50, so normal-priority load never delays it; the late count stayed 0. The rate fell because the capturing program (`v4l2-ctl` and the Python checker) was starved and had no buffer queued.
+- **A delayed IRQ thread does.** Real-time bursts on the IRQ thread's CPU (31) made copies end past the half-frame window. Every late copy came back as an error buffer, and the gaps match: 683 late + 139 lost = 822 at 240 Hz; at 4K, 115 error buffers and 114 gaps (the last frame's failure leaves no gap after it). No repeats, no `IO_PAGE_FAULT`, WARNING or BUG.
+- `sched_rt_runtime_us` equals `sched_rt_period_us` (1,000,000) on this kernel, so real-time throttling is off; the burst program always slept longer than it spun.
+- With no load, the late count stayed 0 here, in the 8-hour session, and in every earlier capture: no false positives seen.
