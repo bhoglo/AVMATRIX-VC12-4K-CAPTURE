@@ -712,3 +712,15 @@ Driver `6432897` (built from the branch, `insmod`), `zero_copy=0` so every frame
 - **A delayed IRQ thread does.** Real-time bursts on the IRQ thread's CPU (31) made copies end past the half-frame window. Every late copy came back as an error buffer, and the gaps match: 683 late + 139 lost = 822 at 240 Hz; at 4K, 115 error buffers and 114 gaps (the last frame's failure leaves no gap after it). No repeats, no `IO_PAGE_FAULT`, WARNING or BUG.
 - `sched_rt_runtime_us` equals `sched_rt_period_us` (1,000,000) on this kernel, so real-time throttling is off; the burst program always slept longer than it spun.
 - With no load, the late count stayed 0 here, in the 8-hour session, and in every earlier capture: no false positives seen.
+
+## 6.10: no stray-write lines with debug_dma off
+
+Driver `7784170` (DKMS `1.0.0.230324.6.7`), `debug_dma=0` (the default) and `zero_copy=1`, Switch 2 as the source (no GPU mode changes; see 6.21). OBS captured at 3840×2160 while `tests/switchtest.sh` ran a second stream; the operator switched the Switch between 1920×1080 and 3840×2160 20 times (10 each way).
+
+- 0 "stray DMA write" lines, 0 `IO_PAGE_FAULT`, no WARNING or BUG.
+- 21 engine restarts for the 20 changes (one transient size); the frame counter moved again within 20–59 ms of each change.
+- 5,839 frames, 0 sequence repeats, 0 error buffers, 6 sequence gaps (frames lost at switches).
+- The second stream asked for 1920×1080 but got 3840×2160, the size OBS held, so `framecheck.py`'s unique-frame count from this run is wrong (it cut 4K frames into 1080p pieces). The sequence checks come from the log and stand. `switchtest.sh` now reads the format back.
+- An earlier attempt with GPU mode changes was stopped by the GPU loss in 6.21.
+
+Still open for 6.10: the IRQ-thread wakeup latency at 1080p240 with `debug_dma` off and on.
