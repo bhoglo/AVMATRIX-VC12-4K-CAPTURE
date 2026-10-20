@@ -325,6 +325,7 @@ These items come after 6.1, and 6.8 needs 6.9.
 ### How the PRs are built
 
 - **Cut along the tested history.** Each PR is one or two of the fork's stage branches, unchanged, so the tree at the end of every PR is a tree that ran on the card. If upstream stops after any PR, it has a tested driver. The earlier plan folded stage 6 fixes into the PRs whose code they fix; that would have produced intermediate trees that never ran, so the fixes stay in PR 6.
+- **One commit left out:** `7c64b98` turned zero-copy on by default, and only PR 6 turned it off again. Without it, a tree that stops at PR 5 keeps zero-copy off. PRs 6 and 7 were restacked on the corrected PR 5; the one conflict (the parameter description) resolves to PR 6's text, and the final tree is unchanged.
 - **No build output.** Stages 6 and 7 committed kernel build output and a `.pyc` by mistake. The PR branches `upstream/6-audit-fixes` and `upstream/7-packaging` are copies with those files filtered out of every commit; their final tree equals the `v1.1.0` release. The fork's own branches keep their history.
 - **Docs go with the code.** The commits reference `docs/SPEC.md`, `docs/results.md` and `docs/AUDIT.md`, so those files ride along and the references resolve. Upstream may ask to drop them; they hold no code.
 - **Built at every tip:** each PR branch builds on kernel 7.2.11 and on Ubuntu 24.04's 6.8 (`tools/ci-build.sh`), checked 2026-10-20. PR 7 adds CI for nine distributions.
@@ -340,7 +341,7 @@ The PRs stack: each branch contains every commit of the ones before it. Upstream
 | 2 | `upstream/2-frame-delivery` | Frame delivery: no deadlock, one frame per program, timestamps, teardown, DMA sizing (stage 1) | 13 | 7 files, +887 −568 | PR 1 |
 | 3 | `upstream/3-input-status` | Input information: DV timings, measured rate, native size, frame intervals, controls, suspend/resume (stage 2) | 23 | 8 files, +960 −777 | PR 2 |
 | 4 | `upstream/4-capture-rework` | Threaded-IRQ capture into app buffers, HDCP, register 9, silence fill, high refresh rates (stages 3 and 4) | 36 | 10 files, +1496 −1036 | PR 3 |
-| 5 | `upstream/5-zero-copy` | Zero-copy, off by default (stage 4.4) | 8 | 8 files, +718 −34 | PR 4 |
+| 5 | `upstream/5-zero-copy` | Zero-copy, off by default (stage 4.4) | 7 | 8 files, +717 −34 | PR 4 |
 | 6 | `upstream/6-audit-fixes` | Fixes from the release audit, dead code removal (stage 6) | 65 | 11 files, +1506 −772 | PR 5 |
 | 7 | `upstream/7-packaging` | Installer, CI, unit tests, README, changelog (stage 7) | 22 | 34 files, +2894 −2636 | PR 6 |
 
