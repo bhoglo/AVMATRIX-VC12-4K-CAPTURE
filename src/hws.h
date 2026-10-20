@@ -72,7 +72,8 @@
 #include <linux/wait.h>
 #include <linux/kfifo.h>
 #include <linux/debugfs.h>
-#include <linux/kref.h>   
+#include <linux/kref.h>
+#include <linux/freezer.h>   
 
 
 //---------------------------------------------
