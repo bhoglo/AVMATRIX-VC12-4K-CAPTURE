@@ -4889,6 +4889,50 @@ static int CheckAudioCapture(struct hws_pcie_dev *pdx,int index)
 	return enable;
 }
 
+/*
+ * The PCM trigger runs in atomic context, and InitVideoSys() sleeps (the
+ * 500 us start pause), so StartAudioCapture() can't call CheckCardStatus().
+ * It only notes that the card lost its run state; the status thread
+ * re-initialises it at its next poll (hws_do_reinit()).
+ */
+static void hws_request_reinit(struct hws_pcie_dev *pdx)
+{
+	u32 st;
+
+	if (pdx->m_PciDeviceLost)
+		return;
+	st = READ_REGISTER_ULONG(pdx, CVBS_IN_BASE);
+	if (st != 0xFFFFFFFF && !(st & 0x01))
+		WRITE_ONCE(pdx->m_NeedReinit, 1);
+}
+
+/*
+ * Status thread: re-initialise a card that lost its run state, then
+ * re-enable the engines that were running. zero-copy goes back to the DMA
+ * buffers first, since InitVideoSys() reprograms the buffer registers.
+ */
+static void hws_do_reinit(struct hws_pcie_dev *pdx)
+{
+	int i;
+
+	if (!READ_ONCE(pdx->m_NeedReinit))
+		return;
+	WRITE_ONCE(pdx->m_NeedReinit, 0);
+	mutex_lock(&pdx->video[0].engine_lock);
+	mutex_lock(&pdx->video[0].cap_lock);
+	hws_zc_stop(pdx, false);
+	InitVideoSys(pdx, 1);
+	for (i = 0; i < pdx->m_nCurreMaxVideoChl; i++) {
+		if (pdx->m_bVCapStarted[i])
+			EnableVideoCapture(pdx, i, 1);
+		if (pdx->m_bACapStarted[i])
+			EnableAudioCapture(pdx, i, 1);
+	}
+	mutex_unlock(&pdx->video[0].cap_lock);
+	mutex_unlock(&pdx->video[0].engine_lock);
+	dev_info(&pdx->pdev->dev, "card had lost its run state; re-initialised\n");
+}
+
 static int  StartAudioCapture(struct hws_pcie_dev *pdx,int index)
 {
 	int j;
@@ -4897,13 +4941,13 @@ static int  StartAudioCapture(struct hws_pcie_dev *pdx,int index)
 	{
 		if(CheckAudioCapture(pdx,index) ==0)
 		{
-			CheckCardStatus(pdx);
+			hws_request_reinit(pdx);
 			EnableAudioCapture(pdx,index,1);
 		}
 		//DbgPrint("Re StartAudioCapture =%d",index);
 		return -1;
 	}
-	CheckCardStatus(pdx);
+	hws_request_reinit(pdx);
 	pdx->m_bAudioRun[index] = 1;
 	pdx->m_bAudioStop[index] = 0;
 	pdx->m_nAudioBufferIndex[index] =0;
@@ -5778,6 +5822,7 @@ int MainKsThreadHandle(void *arg)
 	struct hws_pcie_dev *pdx = (struct hws_pcie_dev *)(arg);
 	while(!kthread_should_stop())
 	{
+		hws_do_reinit(pdx);
 
 		need_check=0;
 		for(i=0; i<pdx->m_nMaxChl; i++)
@@ -6286,6 +6331,26 @@ static int hws_dbg_regsnaps_show(struct seq_file *m, void *unused)
 }
 DEFINE_SHOW_ATTRIBUTE(hws_dbg_regsnaps);
 
+/*
+ * debug_dma only: writing anything stops the card's run state (register 0 =
+ * 0x10, as StopDsp() does), to test the re-init path of hws_request_reinit()
+ * by starting audio afterwards.
+ */
+static ssize_t hws_dbg_reset_write(struct file *f, const char __user *buf, size_t n, loff_t *pos)
+{
+	struct hws_pcie_dev *pdx = file_inode(f)->i_private;
+
+	if (!pdx->m_PciDeviceLost)
+		WRITE_REGISTER_ULONG(pdx, CVBS_IN_BASE, 0x10);
+	return n;
+}
+
+static const struct file_operations hws_dbg_reset_fops = {
+	.owner = THIS_MODULE,
+	.write = hws_dbg_reset_write,
+	.llseek = noop_llseek,
+};
+
 static void hws_debugfs_init(struct hws_pcie_dev *pdx)
 {
 	char name[32];
@@ -6294,8 +6359,10 @@ static void hws_debugfs_init(struct hws_pcie_dev *pdx)
 	pdx->dbg = debugfs_create_dir(name, NULL);
 	debugfs_create_file("status", 0444, pdx->dbg, pdx, &hws_dbg_status_fops);
 	debugfs_create_file("dma", 0444, pdx->dbg, pdx, &hws_dbg_dma_fops);
-	if (debug_dma)
+	if (debug_dma) {
 		debugfs_create_file("regsnaps", 0444, pdx->dbg, pdx, &hws_dbg_regsnaps_fops);
+		debugfs_create_file("simulate_reset", 0200, pdx->dbg, pdx, &hws_dbg_reset_fops);
+	}
 }
 
 static int hws_probe(struct pci_dev *pdev, const struct pci_device_id *pci_id)
