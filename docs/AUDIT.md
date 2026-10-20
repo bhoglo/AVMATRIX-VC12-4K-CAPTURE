@@ -40,6 +40,7 @@ Each finding has three ratings:
 | LINUX-019 | Low | High | both | No CI, and only 7.2 kernels are built | 7.4, 7.5 |
 | LINUX-020 | Low | High | upstream | Dead code paths | 6.18 |
 | LINUX-021 | Low | High | both | No `.gitignore`, and ignored Makefile flags | 7.7 |
+| LINUX-022 | Medium | High | upstream | The interrupt handler acknowledges the wrong bits on a second pass | 6.14 |
 
 ### LINUX-001: zero-copy runs on cards where its safety bound is never programmed
 
@@ -174,6 +175,15 @@ Each finding has three ratings:
 ### LINUX-021: no `.gitignore`, and ignored Makefile flags
 
 - **Evidence:** the repository has no `.gitignore`. `hws_install.log`, which an installer writes as root, and `tests/__pycache__` sit untracked in the tree. The legacy installer copies `src/` with any build output into `/usr/local/share/HWS`. `src/Makefile` sets `EXTRA_CFLAGS` and `EXTRA_LDFLAGS`, which the 7.2.10 kbuild Makefiles don't reference. The build works anyway, because `hws.h` is included by relative path. Nothing references `src/load.sh`.
+
+### LINUX-022: the interrupt handler acknowledges the wrong bits on a second pass
+
+Found while fixing R-03 (spec 6.14), after the audit.
+
+- **Location:** `irqhandler()`, the acknowledge write to register 1 (line 5392 at `66d3773`).
+- **Evidence:** `Int_Value` gains 0x01 for a video half and 0x100 for an audio packet on every pass of the handler's loop, and is never reset between passes. On a second pass it holds 0x02 or 0x202, so the write acknowledges bits that aren't set and leaves the real ones set.
+- **Trigger:** a new interrupt source sets a bit while the handler is between its acknowledge and its re-read of register 1.
+- **Impact:** the loop runs on to its 100-pass limit, acknowledging further wrong bits. Whether the card then raises the interrupt again is unknown.
 
 ## Risks that need validation
 
