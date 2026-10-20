@@ -811,3 +811,23 @@ The oldest kernel built is 5.14 (RHEL 9) and the oldest mainline-based one 5.15 
 The workflow's checks job: shellcheck on every script except `scripts/` (legacy installers, replaced in 7.1) and `play/` (vendor demos), `tests/quarter_sizes.py`, and `make -C tests/unit check` with clang; all pass locally. Checkpatch runs in the Fedora job as a report only (on `hws_video.c`, mostly the vendor's style).
 
 On the card, DKMS `1.0.0.230324.7.1` (srcversion `6A2BEE5356209BF3DF394FF`, both header flags set on 7.2.11, so the same code paths as before): `tests/zctest.sh` all cases clean, zero-copy 0 failed; `v4l2-compliance -s` 58 of 59; a 2 s recording got 98 audio packets with no gaps (the source was sending silence).
+
+## 7.1: install and uninstall
+
+`install.sh` and `uninstall.sh` at `30a4e8d` and `1bd7274`, release version 1.1.0, each run from a copy of the repository at `/tmp/a b/`.
+
+**This machine (Nobara 44, 7.2.11), over the development installs:** `uninstall.sh` removed 20 DKMS versions of the package, 24 entries under `/usr/src` (including the old `HwsUHDX1Capture.ko-1.0.0.230324` link), `/usr/local/share/HWS` and the `/usr/bin/hws-repair.sh` and `hws-uninstall.sh` links, kept `/etc/modprobe.d/hws.conf`, and asked for a reboot since the driver was loaded. `install.sh` then built 1.1.0 for the three kernels with headers (7.2.9, 7.2.10, 7.2.11) and skipped the three without. Reinstalling over 1.1.0 works. The first run registered the package under the distribution's name: `. /etc/os-release` sets `NAME`, which the script also used; fixed before the commit by reading os-release in a subshell. Still to do: reboot into 1.1.0 and capture in OBS.
+
+**VMs** (QEMU/KVM, cloud images, checksums verified; no capture card, so these test the packaging, not capture):
+
+| | Fedora 44 Cloud | Ubuntu 24.04.5 Cloud | Arch Linux Cloud |
+|---|---|---|---|
+| `install.sh` with no packages | stops: `sudo dnf install dkms gcc make kernel-devel-6.19.10-300.fc44.x86_64` | stops: `sudo apt install dkms gcc make linux-headers-6.8.0-147-generic` | stops: the pacman command |
+| That command, as printed | works (the repo still had 6.19.10 headers; dkms also pulled in 7.2.11) | works | fails: an unsynced database, and only the newest kernel's headers exist. Now: `pacman -Syu …`, then reboot if the kernel changed (7.2.9 → 7.2.11) |
+| `install.sh` | 1.1.0 for 6.19.10 and 7.2.11 | 1.1.0 for 6.8.0-147 | 1.1.0 for 7.2.11, loaded |
+| Loading | failed: no `videodev`, `videobuf2-*` or `snd-pcm` in the cloud kernel; `kernel-modules` fixed it | failed: no `videodev`, `videobuf2-*`; `linux-modules-extra-$(uname -r)` fixed it | loaded |
+| After a reboot | `modinfo`: 1.1.0 (booted 7.2.11) | 1.1.0 | 1.1.0 |
+| `uninstall.sh` | `modinfo` fails, `dkms status` empty, none of the 7.1 paths left, no module files | the same | the same; a second run is harmless |
+| Files written in `/tmp/a b/` | none | none | none |
+
+`install.sh` now names those missing modules and the package that has them (checked on Ubuntu by removing `linux-modules-extra` and running it again). The top-level `dkms-install.sh` goes through `install.sh`. Secure Boot was off in every VM and here, so the MOK message wasn't exercised.
