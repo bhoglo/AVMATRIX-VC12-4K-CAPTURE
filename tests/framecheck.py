@@ -24,12 +24,21 @@ LINE = re.compile(r"seq:\s*(\d+) bytesused: (\d+) ts: ([\d.]+)")
 BURST_MS = 4.0  # two deliveries closer than this cannot be separate 60 fps frames
 
 
+errors = 0  # buffers dequeued with V4L2_BUF_FLAG_ERROR
+
+
 def parse_log(path):
+    global errors
     frames = []
     with open(path, errors="replace") as f:
         for line in f:
             m = LINE.search(line)
-            if m:
+            if not m:
+                continue
+            # an error buffer carries no frame: v4l2-ctl writes none of it
+            if re.search(r"\(.*\berror\b.*\)\s*$", line):
+                errors += 1
+            else:
                 frames.append((int(m[1]), int(m[2]), float(m[3])))
     return frames
 
@@ -81,6 +90,7 @@ def main():
     print(f"burst deliveries  {sum(1 for d in deltas if d < BURST_MS)} (delta < {BURST_MS} ms)")
     print(f"sequence gaps     {gaps}")
     print(f"sequence repeats  {repeats} (not above the previous)")
+    print(f"error buffers     {errors} (lost frames, left out above)")
 
 
 if __name__ == "__main__":
