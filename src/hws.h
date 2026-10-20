@@ -393,6 +393,7 @@ struct hws_video{
 	u64						zc_last_ts, zc_gap_prev;	/* for the in-time margin */
 	u32						zc_frames, zc_late, zc_errors, zc_outside;	/* debugfs */
 	u32						size_restarts;	/* debugfs */
+	u32						zc_held_failed;	/* debugfs: 6.11 path */
 	bool					frame_late;	/* the top half's copy ended late (hws_copy_late) */
 	u32						late_copies;	/* frames failed for a late copy (debugfs) */
 	//------------------------
@@ -549,6 +550,7 @@ struct hws_pcie_dev {
 	uint8_t m_bAudioRun[MAX_VID_CHANNELS];
 	uint8_t m_bAudioStop[MAX_VID_CHANNELS];
 	uint8_t m_AudioSkip[MAX_VID_CHANNELS];	/* stale packets still to drop */
+	unsigned int dbg_stale_bottom;	/* debug_dma test knob: the bottom half, counted from now, to treat as stale */
 	int       m_nRDAudioIndex[MAX_VID_CHANNELS];
 	u32       m_dwAudioPTKSize;
 	//-----------------------------
