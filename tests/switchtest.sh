@@ -23,13 +23,13 @@ trap '[ -n "${LOG:-}" ] && [ -e "$OUT/cap.log" ] && cp "$OUT/cap.log" "$LOG"; rm
 # the zero-copy buffers and this capture takes the copy path.
 [ -z "${WITH_OBS:-}" ] && pgrep -x obs >/dev/null && { echo "close OBS first, or set WITH_OBS=1"; exit 1; }
 st() { sudo -n cat "$DBG/status"; }
-st | grep -q "engine restarts" || { echo "the loaded driver has no restart counter; load 1.0.0.230324.6.5 or later"; exit 1; }
+st | grep -q "engine restarts" || { echo "the loaded driver has no restart counter; load 1.0.0.230324.6.6 or later"; exit 1; }
 count() { journalctl -k -b --no-pager | grep -c "$1" || true; }
 pats=(IO_PAGE_FAULT "stray DMA write" "WARNING:" "BUG:" "lost its run state")
 declare -A base
 for p in "${pats[@]}"; do base[$p]=$(count "$p"); done
 echo "zero_copy=$(cat /sys/module/HwsUHDX1Capture/parameters/zero_copy) debug_dma=$(cat /sys/module/HwsUHDX1Capture/parameters/debug_dma), capturing ${w}x${h}"
-echo "before: $(st | grep '^zero-copy')"
+echo "before: $(st | grep -E '^(engine restarts|zero-copy)' | paste -sd' ')"
 
 # framecheck reads the log only after stdin closes, when v4l2-ctl has exited
 # shellcheck disable=SC2094
@@ -65,7 +65,7 @@ trap - INT
 kill -TERM "$cap" 2>/dev/null   # background jobs ignore SIGINT
 wait
 sed 's/^/  /' "$OUT/check"
-echo "after: $(st | grep '^zero-copy')"
+echo "after: $(st | grep -E '^(engine restarts|zero-copy)' | paste -sd' ')"
 st | grep -E "^frames:|stray writes"
 for p in "${pats[@]}"; do printf '%s +%d, ' "$p" $(( $(count "$p") - ${base[$p]} )); done
 echo

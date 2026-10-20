@@ -5801,15 +5801,16 @@ static int ChangeVideoSize(struct hws_pcie_dev *pdx,int ch,int w,int h,int inter
 	unsigned long flags;
 	if(ch != 0) return -1;
 	/*
-	 * Zero-copy buffers are sized for the old input. The card may apply
-	 * the new lengths and register 9 to a run already going into one, so
-	 * stop the engine first and hand the buffers back while it is off.
+	 * The card applies new lengths and register 9 to a run already in
+	 * progress (6.8): a zero-copy buffer sized for the old input could
+	 * overrun, and a DMA buffer gets the rest of an old-size quarter
+	 * after the canary is refilled. Stop the engine first, so zero-copy
+	 * buffers go back while it is off and the canary is filled at rest.
 	 */
-	if (pdx->m_bVCapStarted[ch] &&
-	    (v->zc_prog[0] || v->zc_prog[1] || v->zc_cur || !list_empty(&v->zc_release))) {
+	if (pdx->m_bVCapStarted[ch]) {
 		hws_video_quiesce(pdx, ch);
 		restart = true;
-		v->zc_restarts++;
+		v->size_restarts++;
 	}
 	hws_zc_stop(pdx, restart);
 	if(SetVideoFormteSize(pdx,ch,w,h) != 1)
@@ -6346,9 +6347,10 @@ static int hws_dbg_status_show(struct seq_file *m, void *unused)
 		   READ_ONCE(pdx->irq_audio), READ_ONCE(pdx->irq_fifo_full),
 		   READ_ONCE(pdx->irq_unknown), READ_ONCE(pdx->irq_unknown_bits));
 	seq_printf(m, "copy path: frames failed because a copy ended late: %u\n", READ_ONCE(v->late_copies));
-	seq_printf(m, "zero-copy: %s; frames %u, failed %u, late writes %u, buffers outside the window %u, engine restarts for a size change %u%s\n",
+	seq_printf(m, "engine restarts for a size change: %u\n", v->size_restarts);
+	seq_printf(m, "zero-copy: %s; frames %u, failed %u, late writes %u, buffers outside the window %u%s\n",
 		   hws_zc_unavailable(pdx) ?: (zero_copy ? "on" : "off"),
-		   v->zc_frames, v->zc_errors, v->zc_late, v->zc_outside, v->zc_restarts,
+		   v->zc_frames, v->zc_errors, v->zc_late, v->zc_outside,
 		   v->zc_cur || v->zc_next ? ", in use" : "");
 	seq_printf(m, "audio: gaps filled with silence: %u, silence packets: %u%s\n",
 		   READ_ONCE(pdx->audio[0].silence_gaps), READ_ONCE(pdx->audio[0].silence_pkts),
