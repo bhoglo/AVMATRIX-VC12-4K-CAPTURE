@@ -31,6 +31,12 @@ for p in "${pats[@]}"; do base[$p]=$(count "$p"); done
 echo "zero_copy=$(cat /sys/module/HwsUHDX1Capture/parameters/zero_copy) debug_dma=$(cat /sys/module/HwsUHDX1Capture/parameters/debug_dma), capturing ${w}x${h}"
 echo "before: $(st | grep -E '^(engine restarts|zero-copy)' | paste -sd' ')"
 
+# Another app streaming (OBS) can keep the card at its own size; check the
+# size this stream really gets, since framecheck cuts frames by it.
+v4l2-ctl -d "$DEV" --set-fmt-video=width="$w",height="$h",pixelformat=YUYV >/dev/null 2>&1
+read -r gw gh < <(v4l2-ctl -d "$DEV" --get-fmt-video | awk -F'[ /:]+' '/Width\/Height/{print $3, $4}')
+[ "$gw" = "$w" ] && [ "$gh" = "$h" ] || echo "note: the card stays at ${gw}x${gh} (another app holds the format); capturing that"
+w=$gw h=$gh
 # framecheck reads the log only after stdin closes, when v4l2-ctl has exited
 # shellcheck disable=SC2094
 v4l2-ctl -d "$DEV" --set-fmt-video=width="$w",height="$h",pixelformat=YUYV \
