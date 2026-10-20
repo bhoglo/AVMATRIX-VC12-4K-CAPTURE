@@ -461,3 +461,17 @@ On the debug kernel `7.2.10-hwsdebug` (with `CONFIG_DEBUG_ATOMIC_SLEEP` and lock
 - **During a 4K zero-copy stream:** reset at frame 185, then `arecord` 1 s later. Video stopped at the reset. The two zero-copy buffers in flight completed with an error. The re-init followed the audio start, and frames resumed at sequence 187 (one dropped), 1.1 s after the reset, at 16.67 ms spacing. No report from the checkers; zero-copy 0 failed, 0 late writes.
 - **Gap found:** only an audio start notices a lost run state. Without one, video would stay stopped. Follow-up: let the status thread check the run bit on every poll while capture runs.
 - **Video only, driver `af5925d` (6.19, DKMS `1.0.0.230324.6.2`):** reset during a 4K zero-copy stream with no audio started. The status thread re-initialised the card on its own; the stream's longest gap was 67 ms, one in-flight buffer completed with an error, and no sequence number was skipped. No checker report.
+
+## Stage 6: suspend tests (6.3, 6.7)
+
+Driver `af5925d` (DKMS `1.0.0.230324.6.2`) on 7.2.10, `zero_copy=1`, OBS closed. Each suspend is deep sleep (S3) through `sudo rtcwake -m mem -s 12` to `-s 20`, so no one had to wake the PC.
+
+| Check | Result |
+|---|---|
+| One suspend with nothing open | woke by RTC; "resumed, card re-initialised"; clean log |
+| `arecord -d 30` running across a suspend (6.3) | alsa-lib printed "Suspended. Trying resume. Failed. Restarting stream. Done." and the file holds the full 30.0 s; exit 0 |
+| `arecord` stopped with SIGSTOP across a suspend, killed after resume (6.3) | no oops; the card records normally afterwards |
+| Five suspend cycles with a 4K zero-copy stream and `arecord` running (6.7) | after each resume, 120–121 frames in 2 s and both apps still running; zero-copy 0 failed, 0 late writes; no "HDCP active" line; no BUG, WARNING or `IO_PAGE_FAULT` |
+
+- **Audio content:** the Switch was sending digital silence during these runs. The card delivered real packets at about 47 per second with no silence fill, so the stream itself restarts and runs, but this run doesn't show sound returning after a resume. The operator's OBS session (first session above) does.
+- **Unrelated:** each resume logs a firmware "TSC ADJUST differs" line from the BIOS.
