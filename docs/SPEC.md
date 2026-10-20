@@ -296,7 +296,7 @@ These items come after 6.1, and 6.8 needs 6.9.
 
 ## Stage 7: public release
 
-**Status (2026-10-19): planned.** Stage 7 covers what a user outside the development machine needs. It changes scripts, docs, the build files and CI. Under `src/` it changes only `src/Makefile`. Item 7.8 is the release itself and comes last.
+**Status (2026-10-20): 7.5, 7.6 and 7.7 done on `release/packaging`.** Stage 7 covers what a user outside the development machine needs. It changes scripts, docs, the build files and CI. Under `src/` it was meant to change only `src/Makefile`; 7.5 also moved the scalers and the pure calculations into their own files so tests can build them, and its tests found a scaler bug that was fixed there (see `results.md`). Item 7.8 is the release itself and comes last.
 
 | # | Change |
 |---|---|
