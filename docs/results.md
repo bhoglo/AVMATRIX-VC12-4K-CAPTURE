@@ -452,6 +452,7 @@ The repositories carry no debug kernel, so one was built on 2026-10-19: `7.2.10-
 - **Reports from elsewhere:** a suspicious-RCU warning in `kernel/sched/fair.c` 1.5 s into boot, before the driver loads, and a DMA API warning from `udmabuf`, used by `kwin_wayland`. Neither involves this driver.
 - **Buffers outside the window:** 0 through the four streaming cases, then 174 during the 100 zero-copy start/stop cycles, the same count as on the normal kernel. So it reproduces on a fresh boot and comes from rapid open, stream, close cycles. Those frames used the copy path, the designed fallback. Likely cause, inferred and not measured: with the IOMMU in `DMA-FQ` mode, freed addresses are reused only after the flush queue empties, so quick reallocations get lower addresses, below the card's 512 MiB window. 6.17 checks this.
 - **Not covered here:** the suspend tests, since the debug kernel was booted only once.
+- **Removed 2026-10-19,** after 6.8: the kernel, its modules, its DKMS builds and the build tree. `hws_video_quiesce()` and the 6.8 engine restart came after this pass, so lockdep hasn't seen the status thread taking `engine_lock` before `cap_lock`; by reading, every path that takes both takes them in that order.
 
 ## Stage 6: simulated card reset (6.2)
 
