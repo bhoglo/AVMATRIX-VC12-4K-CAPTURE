@@ -423,3 +423,13 @@ Run on 2026-10-19 with OBS closed, the Switch 2 sending 3840×2160p60 and `zero_
 
 - **Unique-frame counts in `zctest.sh`:** the second run gave 401 of 600 unique frames in every case, including the copy path with zero-copy off. The source was repeating frames at that point. The per-sequence comparison shows the two consumers receive identical frames, so this isn't a driver effect.
 - **Buffers outside the window:** debugfs counted 174 during the `zctest.sh` runs (0 before them). Those buffers used the copy path, which is the designed fallback, but zero-copy round 1 saw none. Check after a fresh boot whether the IOVA window fills up during many start/stop cycles (6.17).
+
+## Stage 6: unbind test (6.4)
+
+Run on 2026-10-19 with OBS closed. Commands: `echo 0000:0b:00.0 | sudo tee /sys/bus/pci/drivers/HwsUHDX1Capture/unbind`, and the same with `bind`.
+
+- **Driver `47006b7`, nothing open:** unbind and bind returned at once; `/dev/video0` and the ALSA card went away and came back; the kernel log showed only the probe line.
+- **Driver `47006b7`, a 4K zero-copy stream (`v4l2-ctl --stream-mmap=4`) and `arecord` running:** unbind returned at once, and `arecord` exited with "File descriptor in bad state". `v4l2-ctl` stayed blocked in DQBUF, because nothing woke it, until it was killed with SIGKILL. It then exited without a D state or any kernel message, so closing after remove is safe. Fixed in `5815209`: remove() calls `vb2_queue_error()` on every open queue.
+- **Driver `5815209`** (DKMS `1.0.0.230324.6.1`, srcversion `6A47E2DE4A0F57F50595CB5`, loaded with `modprobe` while the card was unbound, no reboot): with both streams running, `v4l2-ctl` now gets `VIDIOC_DQBUF: Input/output error` and exits by itself.
+- **20 cycles** of bind, start both streams, wait 1–2 s, unbind, on `5815209`: all 20 unbinds returned, every app exited by itself within 1 s, and the kernel log had no BUG, WARNING, oops, refcount, hung-task or `IO_PAGE_FAULT` line. After the last bind: 4K capture at 60.00 fps, 300 of 300 unique, no gaps, and `arecord` records. The IRQ placement helper (H.2) re-pinned IRQ 202 to CPUs 8–15 and 24–31 after each bind.
+- **Not covered:** KASAN and kmemleak (not in this kernel; 6.16).
