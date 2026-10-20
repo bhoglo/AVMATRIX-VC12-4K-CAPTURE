@@ -3,6 +3,9 @@ HwsUHDX1Capture-objs := hws_video.o hws_scale.o
 obj-m = HwsUHDX1Capture.o
 
 ccflags-y += -I$(src)
+# modinfo shows the DKMS package version
+HWS_VERSION := $(shell sed -n 's/^PACKAGE_VERSION=//p' $(src)/dkms.conf 2>/dev/null)
+ccflags-y += -DHWS_VERSION='"$(or $(HWS_VERSION),unknown)"'
 
 # Kernel API checks. Red Hat backports newer V4L2 APIs into kernels with
 # older version numbers (RHEL 9.10 and 10.2 have the 6.18 v4l2_fh_add();

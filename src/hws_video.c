@@ -4796,4 +4796,4 @@ module_exit(pcie_hws_exit);
 MODULE_DESCRIPTION("HWS driver");
 MODULE_AUTHOR("Alex Liu <alex.liu@longtimetech.com>");
 MODULE_LICENSE("GPL");
-MODULE_VERSION("1.0");
+MODULE_VERSION(HWS_VERSION);	/* PACKAGE_VERSION in dkms.conf, see src/Makefile */
