@@ -749,8 +749,9 @@ static int hws_query_timings(struct hws_video *videodev, struct v4l2_dv_timings 
 {
 	struct hws_pcie_dev *pdx = videodev->dev;
 	struct v4l2_fract tpf, ptpf;
-	u64 want_ns, best_err = U64_MAX, err;
-	int w, h, il, i, best = -1;
+	u64 want_ns, cand_ns[16];
+	int cand[16], n = 0;
+	int w, h, il, i, best;
 	u32 st;
 
 	if (!hws_read_input(pdx, videodev->index, &w, &h, &il)) {
@@ -764,20 +765,18 @@ static int hws_query_timings(struct hws_video *videodev, struct v4l2_dv_timings 
 	}
 	want_ns = hws_tpf_ns(&tpf);
 
-	for (i = 0; v4l2_dv_timings_presets[i].bt.width; i++) {
+	/* the presets with this size (a handful), then the closest rate within 1% */
+	for (i = 0; v4l2_dv_timings_presets[i].bt.width && n < ARRAY_SIZE(cand); i++) {
 		const struct v4l2_bt_timings *bt = &v4l2_dv_timings_presets[i].bt;
 		if (bt->width != w || bt->height != h || !!bt->interlaced != !!il)
 			continue;
 		ptpf = v4l2_calc_timeperframe(&v4l2_dv_timings_presets[i]);
-		err = hws_tpf_ns(&ptpf);
-		err = err > want_ns ? err - want_ns : want_ns - err;
-		if (err < best_err) {
-			best_err = err;
-			best = i;
-		}
+		cand[n] = i;
+		cand_ns[n++] = hws_tpf_ns(&ptpf);
 	}
-	if (best >= 0 && best_err * 100 <= want_ns) {	/* within 1% */
-		*t = v4l2_dv_timings_presets[best];
+	best = hws_closest_interval(cand_ns, n, want_ns);
+	if (best >= 0) {
+		*t = v4l2_dv_timings_presets[cand[best]];
 		return 0;
 	}
 	memset(t, 0, sizeof(*t));
@@ -1916,13 +1915,13 @@ static u32 *hws_zc_mark(struct hws_pcie_dev *pdx, struct hwsvideo_buffer *buf, i
  */
 static bool hws_zc_buffer_ok(struct hws_pcie_dev *pdx, struct hwsvideo_buffer *buf)
 {
-	u32 max = 0, end;
+	u32 len[4], end;
 	u64 first, last;
 	int q;
 
 	for (q = 0; q < 4; q++)
-		max = max_t(u32, max, pdx->m_format[q].HLAF_SIZE);
-	end = hws_zc_off(pdx, 3) + max + 2048;
+		len[q] = pdx->m_format[q].HLAF_SIZE;
+	end = hws_zc_span(len);
 	if (!buf->dma || !buf->mem || vb2_plane_size(&buf->vb.vb2_buf, 0) < end)
 		return false;
 	first = buf->dma & ~(u64)PCI_E_BAR_ADD_LOWMASK;
@@ -1943,8 +1942,8 @@ static void hws_zc_release(struct hws_video *v)
 
 	list_for_each_entry_safe(buf, tmp, &v->zc_release, queue) {
 		if (buf == v->zc_prog[0] || buf == v->zc_prog[1] ||
-		    (s32)(v->zc_ev[0] - buf->zc_free_after[0]) < 0 ||
-		    (s32)(v->zc_ev[1] - buf->zc_free_after[1]) < 0)
+		    hws_ev_before(v->zc_ev[0], buf->zc_free_after[0]) ||
+		    hws_ev_before(v->zc_ev[1], buf->zc_free_after[1]))
 			continue;
 		list_del(&buf->queue);
 		if (buf->zc_state == VB2_BUF_STATE_DONE)
@@ -2851,22 +2850,15 @@ static void EnableAudioCapture(struct hws_pcie_dev *pdx,int index,int en)
 
 static int SetVideoFormteSize(struct hws_pcie_dev *pdx,int ch,int w,int h)
 {
+	u32 len[4];
 	int hf_size;
 	int hf_size2;
-	//int frame_size;
 	if(ch !=0) return -1;
 
-	hf_size = (w*h*2)/(4*16*128);
-	hf_size = hf_size*16*128;
-
-	hf_size2 = (w*h*2)/(4*16*128);
-	hf_size2 = w*h*2 -(hf_size2*16*128*3);
-	if(hf_size2 <0)
-	{
+	if (hws_quarter_sizes(w, h, len) < 0)
 		return -1;
-	}
-	hf_size2 = hf_size2/(16*128);
-	hf_size2 = (hf_size2+1)*16*128;
+	hf_size = len[0];
+	hf_size2 = len[3];
 	/*
 	 * The card DMAs each quarter into one buffer whose last
 	 * MAX_AUDIO_CAP_SIZE bytes hold the audio ring. A larger quarter would
@@ -3572,27 +3564,11 @@ static void DpcForIsr_Audio0(unsigned long data)
  */
 static void hws_frame_end(struct hws_pcie_dev *pdx, int ch, u64 now)
 {
-	u64 prev = pdx->m_FrameEndNs[ch];
-	u64 elapsed, d, unit;
+	u64 iv = hws_rate_frame_end(&pdx->m_RateWin[ch], now);
 
-	pdx->m_FrameEndNs[ch] = now;
-	if (!prev || now - prev > 200 * NSEC_PER_MSEC || !pdx->m_RateWinStartNs[ch]) {
-		pdx->m_RateWinStartNs[ch] = now;
-		pdx->m_RateWinFrames[ch] = 0;
-		pdx->m_RateMinDeltaNs[ch] = 0;
-		return;
-	}
-	d = now - prev;
-	if (!pdx->m_RateMinDeltaNs[ch] || d < pdx->m_RateMinDeltaNs[ch])
-		pdx->m_RateMinDeltaNs[ch] = d;
-	unit = pdx->m_RateMinDeltaNs[ch];
-	pdx->m_RateWinFrames[ch] += max_t(u32, 1, (u32)div64_u64(d + unit / 2, unit));
-	elapsed = now - pdx->m_RateWinStartNs[ch];
-	if (elapsed >= NSEC_PER_SEC) {
-		WRITE_ONCE(pdx->m_FrameIntervalNs[ch], div_u64(elapsed, pdx->m_RateWinFrames[ch]));
+	if (iv) {
+		WRITE_ONCE(pdx->m_FrameIntervalNs[ch], iv);
 		WRITE_ONCE(pdx->m_RateUpdatedNs[ch], now);
-		pdx->m_RateWinStartNs[ch] = now;
-		pdx->m_RateWinFrames[ch] = 0;
 	}
 }
 
@@ -3617,16 +3593,10 @@ static u32 hws_hw_fps(struct hws_pcie_dev *pdx, int ch)
  */
 static bool hws_input_timeperframe(struct hws_pcie_dev *pdx, int ch, struct v4l2_fract *tpf)
 {
-	static const struct v4l2_fract standard[] = {
-		{ 1001, 24000 }, { 1, 24 }, { 1, 25 }, { 1001, 30000 }, { 1, 30 },
-		{ 1, 50 }, { 1001, 60000 }, { 1, 60 }, { 1, 100 }, { 1001, 120000 },
-		{ 1, 120 }, { 1, 144 }, { 1, 240 },
-	};
 	u64 meas = READ_ONCE(pdx->m_FrameIntervalNs[ch]);
 	u64 at = READ_ONCE(pdx->m_RateUpdatedNs[ch]);
-	u64 best_err = U64_MAX, std;
 	u32 fps, tol = 200;	/* 1/200 = 0.5% */
-	int i, best = -1;
+	int i;
 
 	if (!meas || !pdx->m_bVCapStarted[ch] || ktime_get_ns() - at > 2 * NSEC_PER_SEC) {
 		fps = hws_hw_fps(pdx, ch);
@@ -3637,16 +3607,10 @@ static bool hws_input_timeperframe(struct hws_pcie_dev *pdx, int ch, struct v4l2
 			return false;
 		}
 	}
-	for (i = 0; i < ARRAY_SIZE(standard); i++) {
-		std = div_u64((u64)standard[i].numerator * NSEC_PER_SEC, standard[i].denominator);
-		if ((meas > std ? meas - std : std - meas) < best_err) {
-			best_err = meas > std ? meas - std : std - meas;
-			best = i;
-		}
-	}
-	if (best >= 0 && best_err * tol <= div_u64((u64)standard[best].numerator * NSEC_PER_SEC,
-						    standard[best].denominator)) {
-		*tpf = standard[best];
+	i = hws_snap_interval(meas, tol);
+	if (i >= 0) {
+		tpf->numerator = hws_std_intervals[i][0];
+		tpf->denominator = hws_std_intervals[i][1];
 	} else {
 		tpf->numerator = (u32)div_u64(meas, 1000);	/* microseconds */
 		tpf->denominator = 1000000;
@@ -4765,7 +4729,7 @@ static int hws_resume(struct device *d)
 	pdx->m_bStartRun = 0;
 	InitVideoSys(pdx, 0);
 	for (i = 0; i < pdx->m_nCurreMaxVideoChl; i++) {
-		pdx->m_FrameEndNs[i] = 0;	/* restart the frame-rate window */
+		pdx->m_RateWin[i].frame_end = 0;	/* restart the frame-rate window */
 		if (pdx->m_ResumeVideo[i]) {
 			pdx->m_bVCapStarted[i] = 0;
 			StartVideoCapture(pdx, i);
