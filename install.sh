@@ -133,7 +133,7 @@ if [ ${#missing[@]} -gt 0 ]; then
 elif [ $enrol -eq 1 ]; then
     echo "The driver loads after the key is enrolled and the PC has rebooted."
 elif [ -d "/sys/module/$MODULE" ]; then
-    echo "An older version of the driver is loaded. Reboot to use $VER."
+    echo "The driver is already loaded. Reboot to use the version just installed ($VER)."
 elif modprobe "$MODULE" 2>/dev/null; then
     echo "Loaded. Check with: v4l2-ctl --list-devices; arecord -l"
 else

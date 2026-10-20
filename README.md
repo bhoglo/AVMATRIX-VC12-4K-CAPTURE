@@ -24,7 +24,7 @@ The headers must match the kernel you are running (`uname -r`).
 | Distribution | Command |
 |---|---|
 | Fedora | `sudo dnf install dkms gcc make kernel-devel-$(uname -r)` |
-| Ubuntu, Debian | `sudo apt install dkms gcc make linux-headers-$(uname -r)` |
+| Ubuntu, Debian | `sudo apt update && sudo apt install dkms gcc make linux-headers-$(uname -r)` |
 | Arch | `sudo pacman -Syu dkms gcc make linux-headers`, then reboot if the kernel was updated |
 
 Desktop installs have the kernel's video and sound modules. Minimal kernels (cloud and some server installs) leave them out, and the driver then fails to load. Add them like this:
@@ -45,7 +45,7 @@ cd AVMATRIX-VC12-4K-CAPTURE
 `install.sh` asks for your password through `sudo`. It copies the sources to `/usr/src/HwsUHDX1CaptureForLinux-<version>`, builds the module for every installed kernel that has headers, and loads it. It ends with one of these lines:
 
 - `Loaded.` The driver is running.
-- `An older version of the driver is loaded. Reboot to use <version>.`
+- `The driver is already loaded. Reboot to use the version just installed (<version>).`
 - `This kernel lacks modules the driver needs`, followed by the package to install (see step 1).
 - A Secure Boot message (see the next step).
 
@@ -67,6 +67,16 @@ To check: `mokutil --test-key /var/lib/dkms/mok.pub` (or the Ubuntu path) prints
 
 ### 4. Check that it works
 
+With the card fitted, the driver loads at boot. The checks below use `v4l2-ctl` and `arecord`. Install them if you don't have them:
+
+| Distribution | Command |
+|---|---|
+| Fedora | `sudo dnf install v4l-utils alsa-utils` |
+| Ubuntu, Debian | `sudo apt install v4l-utils alsa-utils` |
+| Arch | `sudo pacman -S v4l-utils alsa-utils` |
+
+Then run:
+
 ```sh
 v4l2-ctl --list-devices        # shows "HUHDVideo 1" and its /dev/video node
 arecord -l                     # shows a card "HUHDAudio 1"
@@ -74,7 +84,7 @@ sudo dmesg | grep HwsUHDX1Capture
 modinfo -F version HwsUHDX1Capture
 ```
 
-`v4l2-ctl` is in the `v4l-utils` package. The kernel log shows a line like `DMA buffers: 4 x 4608 KiB, input up to 4096x2160` when the driver finds the card.
+The kernel log shows a line like `DMA buffers: 4 x 4608 KiB, input up to 4096x2160` when the driver finds the card.
 
 ## Use it in OBS
 
@@ -100,7 +110,7 @@ git pull
 ./install.sh
 ```
 
-Reboot if the installer says an older version is loaded.
+Reboot if the installer says the driver is already loaded.
 
 ## Uninstall
 
