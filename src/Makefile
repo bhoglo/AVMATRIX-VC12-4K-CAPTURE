@@ -1,4 +1,4 @@
-HwsUHDX1Capture-objs := hws_video.o
+HwsUHDX1Capture-objs := hws_video.o hws_scale.o
 
 obj-m = HwsUHDX1Capture.o
 

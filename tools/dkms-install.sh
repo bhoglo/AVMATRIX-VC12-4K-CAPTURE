@@ -38,10 +38,10 @@ dir=/usr/src/$NAME-$ver
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-# Sources only: the repository also tracks build output (.o, .ko, .cmd),
-# which kbuild would reuse instead of compiling the new source.
-git -C "$REPO" archive "$commit" src/Makefile src/dkms.conf src/hws_video.c src/hws.h src/hws_reg.h \
-    | tar -x -C "$tmp" --strip-components=1
+# Sources only: some commits also carry build output (.o, .ko, .cmd,
+# .mod.c), which kbuild would reuse instead of compiling the new source.
+git -C "$REPO" archive "$commit" src | tar -x -C "$tmp" --strip-components=1
+find "$tmp" -mindepth 1 \( -name '*.mod.c' -o \! \( -name '*.c' -o -name '*.h' -o -name Makefile -o -name dkms.conf \) \) -delete
 sed -i "s/^PACKAGE_VERSION=.*/PACKAGE_VERSION=$ver/" "$tmp/dkms.conf"
 echo "$commit" >"$tmp/SOURCE_COMMIT"
 sudo mkdir "$dir"
