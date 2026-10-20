@@ -37,7 +37,7 @@ Desktop installs have the kernel's video and sound modules. Minimal kernels (clo
 ### 2. Run the installer
 
 ```sh
-git clone --branch release/packaging https://github.com/bhoglo/AVMATRIX-VC12-4K-CAPTURE.git
+git clone --branch v1.1.0 https://github.com/bhoglo/AVMATRIX-VC12-4K-CAPTURE.git
 cd AVMATRIX-VC12-4K-CAPTURE
 ./install.sh
 ```
@@ -173,6 +173,7 @@ They take effect the next time the driver loads, so reboot after a change.
 ## What's in this repository
 
 - `install.sh`, `uninstall.sh`: install and remove the driver. `dkms-install.sh` runs `install.sh`.
+- `CHANGELOG.md`: what changed in each release. `SECURITY.md`: how to report a security problem.
 - `src/`: the driver source.
 - `tests/`, `tools/`: test scripts and developer tools. `docs/` holds the developer documentation: the plan, the audit, the register notes and the test results.
 - `doc/`, `quick_start.txt` and `play/` are AVMatrix's original material. Their install steps are out of date; follow this README instead.
