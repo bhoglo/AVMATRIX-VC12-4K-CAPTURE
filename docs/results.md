@@ -783,3 +783,31 @@ On branch `release/packaging` (from `fix/release-audit`), kernel 7.2.11.
 2. Several fixed-size scalers (first `FHD_To_HD_Scaler()`) load pixels through `int *` at odd byte offsets: undefined behaviour in C, harmless on x86-64, a fault on CPUs that trap misaligned loads. Not changed; the unit tests build `hws_scale.c` with UBSan's alignment check off. x86-64 stays the only tested architecture.
 
 **On the card** (DKMS `1.0.0.230324.7.0`, srcversion `C334345BE2C7FC8E110FBD2`, the PC's GPU at 3840×2160p60, no mode changes): `G_PARM` 60/1 idle and while capturing (measured 16,666,974 ns); DV timings the CTA-861 preset, VIC 97; a 1920×1080 capture from the 4K input (scaled) 60.00 fps, no gaps; `tests/zctest.sh` all cases 60.00 fps, zero-copy 0 failed, 0 outside the window; `v4l2-compliance -s` 58 of 59 (the by-design `reqbufs != EBUSY`); no `IO_PAGE_FAULT`, WARNING or BUG.
+
+## 7.4: build matrix
+
+`tools/ci-build.sh` in each distribution's container, under podman on this machine, at `92be2d1`; `.github/workflows/build.yml` runs the same script on GitHub once pushed. Each build installs the distribution's kernel headers and builds with W=1 against that directory.
+
+| Distribution | Kernel headers | Result | W=1 warnings |
+|---|---|---|---|
+| Fedora 44 | 7.2.11-200.fc44 | pass | 24 |
+| Arch Linux | 7.2.11-arch1-1 | pass | 23 |
+| Ubuntu 24.04.5 LTS | 6.8.12 (6.8.0-147-generic) | pass | 24 |
+| Ubuntu 22.04.5 LTS | 5.15.216 (5.15.0-198-generic) | pass | 22 |
+| Debian 12 | 6.1.190 (6.1.0-54-amd64) | pass | 22 |
+| CentOS Stream 9 (RHEL 9.10) | 5.14.0-758.el9 | pass | 22 |
+| AlmaLinux 9.8 | 5.14.0-687.58.1.el9_8 | pass | 22 |
+| CentOS Stream 10 (RHEL 10.4) | 6.12.0-277.el10 | pass | 25 |
+| AlmaLinux 10.2 | 6.12.0-211.66.1.el10_2 | pass | 23 |
+
+What it took (`481b333`):
+- RHEL backports the 6.18 `v4l2_fh_add(fh, file)` (9.10, 10.2) and the 7.0 removal of `vb2_ops.wait_prepare` (9.10, 10.4), so `LINUX_VERSION_CODE` checks picked the wrong side. `src/Makefile` now greps the headers being built against and sets `HWS_FH_TAKES_FILE` and `HWS_VB2_NO_WAIT_PREPARE`.
+- `snd_dma_continuous_data()`, a macro until 5.19, is also gone from RHEL 9.10; the code tests the macro itself.
+- RHEL 9 builds no `videobuf2-dma-contig`. Zero-copy is its only user; without it the driver reports zero-copy as unavailable ("kernel built without videobuf2-dma-contig") and uses the copy path.
+- Ubuntu 24.04 and Debian 12 first failed in the container setup, not the code: W=1 runs `kernel-doc`, which needs perl's `Pod::Usage`; the script installs `perl`.
+
+The oldest kernel built is 5.14 (RHEL 9) and the oldest mainline-based one 5.15 (Ubuntu 22.04). Building is all this shows: the module has run only on Fedora/Nobara 7.2.x.
+
+The workflow's checks job: shellcheck on every script except `scripts/` (legacy installers, replaced in 7.1) and `play/` (vendor demos), `tests/quarter_sizes.py`, and `make -C tests/unit check` with clang; all pass locally. Checkpatch runs in the Fedora job as a report only (on `hws_video.c`, mostly the vendor's style).
+
+On the card, DKMS `1.0.0.230324.7.1` (srcversion `6A2BEE5356209BF3DF394FF`, both header flags set on 7.2.11, so the same code paths as before): `tests/zctest.sh` all cases clean, zero-copy 0 failed; `v4l2-compliance -s` 58 of 59; a 2 s recording got 98 audio packets with no gaps (the source was sending silence).
