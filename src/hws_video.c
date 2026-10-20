@@ -43,6 +43,15 @@ static void hws_check_source_change(struct hws_video *videodev);
 static bool hws_zc_wanted(struct hws_pcie_dev *pdx);
 static const char *hws_zc_unavailable(struct hws_pcie_dev *pdx);
 static bool zero_copy;	/* module parameter, defined with hws_zc_wanted() */
+
+/*
+ * Debug-only DMA checks, read at load: the canary in each DMA buffer's
+ * unused gap, the register snapshots in debugfs regsnaps, and the stray-write
+ * log. Off by default, since the scan reads up to 14 MiB every 250 ms.
+ */
+static bool debug_dma;
+module_param(debug_dma, bool, 0444);
+MODULE_PARM_DESC(debug_dma, "enable the DMA canary, register snapshots and debug knobs (default off)");
 static void hws_zc_stop(struct hws_pcie_dev *pdx, bool card_stopped);
 
 //------------------------
@@ -4922,6 +4931,9 @@ static void hws_fill_canary(struct hws_pcie_dev *pdx)
 {
 	int i, start, end = pdx->m_MaxHWVideoBufferSize - MAX_AUDIO_CAP_SIZE;
 
+	if (!debug_dma)
+		return;
+
 	for (i = 0; i < pdx->m_nMaxChl && i < MAX_VID_CHANNELS; i++) {
 		start = pdx->m_pbyVideoBuffer[i] ? round_up(pdx->m_format[i].HLAF_SIZE, 64) : end;
 		if (start >= end) {
@@ -4936,21 +4948,36 @@ static void hws_fill_canary(struct hws_pcie_dev *pdx)
 }
 
 /*
- * Status thread, every poll: log any canary words the card overwrote, with
- * enough context to tell when it happens, then re-arm them.
+ * Status thread, every fifth poll with debug_dma: log any canary words the
+ * card overwrote, with enough context to tell when it happens, then re-arm
+ * them. The scan runs without cap_lock, which the IRQ thread needs; the lock
+ * is held only to read where the gap starts and to re-arm it, and the re-arm
+ * is skipped if an input-size change moved the gap meanwhile.
+ *
+ * An over-long quarter run (stale lengths after a mode change) ends with a
+ * 2 KiB block at register 9 x 16. That block is expected, so it is logged at
+ * debug level as an over-long run rather than as a stray write.
  */
 static void hws_check_canary(struct hws_pcie_dev *pdx)
 {
-	int i, k, words, lo, hi, end = pdx->m_MaxHWVideoBufferSize - MAX_AUDIO_CAP_SIZE;
+	int i, k, words, lo, hi, start, end = pdx->m_MaxHWVideoBufferSize - MAX_AUDIO_CAP_SIZE;
 	struct hws_regsnap last = { 0 };
 	unsigned long flags;
+	u32 exp_lo, exp_hi;
 	u32 *c;
 
+	if (!debug_dma || pdx->m_PciDeviceLost)
+		return;
+	exp_lo = READ_REGISTER_ULONG(pdx, HWS_REG_DMA_MAX_SIZE) * 16;
+	exp_hi = exp_lo + 2048;
 	for (i = 0; i < pdx->m_nMaxChl && i < MAX_VID_CHANNELS; i++) {
-		if (!pdx->canary_start[i])
+		mutex_lock(&pdx->video[0].cap_lock);
+		start = pdx->canary_start[i];
+		mutex_unlock(&pdx->video[0].cap_lock);
+		if (!start)
 			continue;
-		c = (u32 *)(pdx->m_pbyVideoBuffer[i] + pdx->canary_start[i]);
-		words = (end - pdx->canary_start[i]) / 4;
+		c = (u32 *)(pdx->m_pbyVideoBuffer[i] + start);
+		words = (end - start) / 4;
 		lo = -1;
 		hi = -1;
 		for (k = 0; k < words; k++) {
@@ -4962,21 +4989,29 @@ static void hws_check_canary(struct hws_pcie_dev *pdx)
 		}
 		if (lo < 0)
 			continue;
-		pdx->canary_hits[i]++;
-		pdx->canary_last_lo[i] = (u64)pdx->m_pbyVideo_phys[i] + pdx->canary_start[i] + lo * 4;
-		pdx->canary_last_hi[i] = (u64)pdx->m_pbyVideo_phys[i] + pdx->canary_start[i] + hi * 4 + 3;
-		spin_lock_irqsave(&pdx->snap_lock, flags);
-		if (pdx->snap_next)
-			last = pdx->snaps[(pdx->snap_next - 1) % HWS_REGSNAPS];
-		spin_unlock_irqrestore(&pdx->snap_lock, flags);
-		dev_info_ratelimited(&pdx->pdev->dev,
-			"stray DMA write #%u: buffer %d, offset %#x-%#x (IOVA %llx-%llx); video %s, audio %s, frame %u; %llu ms after %s %s\n",
-			pdx->canary_hits[i], i, pdx->canary_start[i] + lo * 4, pdx->canary_start[i] + hi * 4 + 3,
-			pdx->canary_last_lo[i], pdx->canary_last_hi[i],
-			pdx->m_bVCapStarted[0] ? "on" : "off", pdx->m_bACapStarted[0] ? "on" : "off",
-			pdx->m_FrameSeq[0], last.ts ? div_u64(ktime_get_ns() - last.ts, NSEC_PER_MSEC) : 0,
-			last.what == 'A' ? "audio" : "video", last.en ? "enable" : "disable");
-		memset32(c + lo, HWS_CANARY, hi - lo + 1);
+		if (start + lo * 4 >= exp_lo && start + hi * 4 + 4 <= exp_hi) {
+			dev_dbg(&pdx->pdev->dev, "over-long DMA run ended at buffer %d offset %#x (register 9), as expected\n",
+				i, start + lo * 4);
+		} else {
+			pdx->canary_hits[i]++;
+			pdx->canary_last_lo[i] = (u64)pdx->m_pbyVideo_phys[i] + start + lo * 4;
+			pdx->canary_last_hi[i] = (u64)pdx->m_pbyVideo_phys[i] + start + hi * 4 + 3;
+			spin_lock_irqsave(&pdx->snap_lock, flags);
+			if (pdx->snap_next)
+				last = pdx->snaps[(pdx->snap_next - 1) % HWS_REGSNAPS];
+			spin_unlock_irqrestore(&pdx->snap_lock, flags);
+			dev_info_ratelimited(&pdx->pdev->dev,
+				"stray DMA write #%u: buffer %d, offset %#x-%#x (IOVA %llx-%llx); video %s, audio %s, frame %u; %llu ms after %s %s\n",
+				pdx->canary_hits[i], i, start + lo * 4, start + hi * 4 + 3,
+				pdx->canary_last_lo[i], pdx->canary_last_hi[i],
+				pdx->m_bVCapStarted[0] ? "on" : "off", pdx->m_bACapStarted[0] ? "on" : "off",
+				pdx->m_FrameSeq[0], last.ts ? div_u64(ktime_get_ns() - last.ts, NSEC_PER_MSEC) : 0,
+				last.what == 'A' ? "audio" : "video", last.en ? "enable" : "disable");
+		}
+		mutex_lock(&pdx->video[0].cap_lock);
+		if (pdx->canary_start[i] == start)
+			memset32(c + lo, HWS_CANARY, hi - lo + 1);
+		mutex_unlock(&pdx->video[0].cap_lock);
 	}
 }
 
@@ -5769,11 +5804,8 @@ int MainKsThreadHandle(void *arg)
 					 hdcp ? "active, delivering black frames" : "no longer active");
 			}
 		}
-		if (poll++ % 5 == 0) {	/* the scan reads about 2 MB: every 250 ms is enough */
-			mutex_lock(&pdx->video[0].cap_lock);	/* start_streaming can refill it */
+		if (poll++ % 5 == 0)	/* up to 14 MiB at 1080p: every 250 ms is enough */
 			hws_check_canary(pdx);
-			mutex_unlock(&pdx->video[0].cap_lock);
-		}
 		/*
 		 * TASK_IDLE: ssleep() slept uninterruptibly, which counts toward
 		 * the load average and kept it 1.0 higher for as long as the
@@ -6080,7 +6112,7 @@ static void hws_snap_regs(struct hws_pcie_dev *pdx, char what, int en)
 	unsigned long flags;
 	int i;
 
-	if (pdx->m_PciDeviceLost || !pdx->map_bar0_addr)
+	if (!debug_dma || pdx->m_PciDeviceLost || !pdx->map_bar0_addr)
 		return;
 	s.ts = ktime_get_ns();
 	s.what = what;
@@ -6262,7 +6294,8 @@ static void hws_debugfs_init(struct hws_pcie_dev *pdx)
 	pdx->dbg = debugfs_create_dir(name, NULL);
 	debugfs_create_file("status", 0444, pdx->dbg, pdx, &hws_dbg_status_fops);
 	debugfs_create_file("dma", 0444, pdx->dbg, pdx, &hws_dbg_dma_fops);
-	debugfs_create_file("regsnaps", 0444, pdx->dbg, pdx, &hws_dbg_regsnaps_fops);
+	if (debug_dma)
+		debugfs_create_file("regsnaps", 0444, pdx->dbg, pdx, &hws_dbg_regsnaps_fops);
 }
 
 static int hws_probe(struct pci_dev *pdev, const struct pci_device_id *pci_id)
