@@ -390,7 +390,7 @@ struct hws_video{
 	u32						zc_ev[2];	/* half-done interrupts seen per pair */
 	u32						zc_stable;	/* complete frames since the lengths last changed */
 	u64						zc_last_ts, zc_gap_prev;	/* for the in-time margin */
-	u32						zc_frames, zc_late, zc_errors, zc_outside;	/* debugfs */
+	u32						zc_frames, zc_late, zc_errors, zc_outside, zc_restarts;	/* debugfs */
 	bool					frame_late;	/* the top half's copy ended late (hws_copy_late) */
 	u32						late_copies;	/* frames failed for a late copy (debugfs) */
 	//------------------------

@@ -13,7 +13,7 @@ The log is read after stdin closes, when v4l2-ctl has exited.
 Reports the delivered frame rate, how many frames are byte-for-byte
 duplicates of the previous one, timestamp spacing, and sequence gaps.
 A healthy 59.94 fps source gives ~59.94 fps, no duplicates, deltas near
-16.68 ms and no bursts.
+16.68 ms, no bursts and no sequence repeats.
 """
 import hashlib
 import re
@@ -70,6 +70,7 @@ def main():
     span = ts[-1] - ts[0]
     dup_prev = sum(1 for a, b in zip(hashes, hashes[1:]) if a == b)
     gaps = sum(b - a - 1 for a, b in zip(seqs, seqs[1:]) if b - a > 1)
+    repeats = sum(1 for a, b in zip(seqs, seqs[1:]) if b <= a)
 
     print(f"frames            {len(frames)} over {span:.3f} s")
     print(f"delivered fps     {(len(frames) - 1) / span:.2f}")
@@ -79,6 +80,7 @@ def main():
           f"max {max(deltas):.2f}  stdev {statistics.pstdev(deltas):.2f}")
     print(f"burst deliveries  {sum(1 for d in deltas if d < BURST_MS)} (delta < {BURST_MS} ms)")
     print(f"sequence gaps     {gaps}")
+    print(f"sequence repeats  {repeats} (not above the previous)")
 
 
 if __name__ == "__main__":
