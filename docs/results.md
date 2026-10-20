@@ -660,9 +660,22 @@ Driver `7784170` (DKMS `1.0.0.230324.6.7`), `zero_copy=1` from `/etc/modprobe.d/
 - **Memory:** OBS grew from 433 to 459 MiB in the first 2.5 h and then stayed at 459 MiB for 5.5 h. Available system memory moved between 84.3 and 86.4 GiB with no trend.
 - **Kernel and PipeWire:** 0 `IO_PAGE_FAULT`, 0 stray writes, 0 PipeWire errors or xruns, no WARNING or BUG.
 
-### GPU loss before the session (not the driver, as far as the logs show)
+### GPU losses during mode changes while capturing (6.21, open)
 
-During setup, with OBS capturing at 1280×720, `kscreen-doctor` switched HDMI-A-2 from 1280×720 to 3840×2160p60 at 22:58:47. 1.3 s later the kernel logged `amdgpu 0000:03:00.0: device lost from bus!` (Radeon RX 9070), then display-engine timeouts, and the desktop stopped responding; the operator rebooted. The card sits behind the chipset (00:02.1) and the GPU on a CPU root port (00:01.1), in different IOMMU groups; the log has no AER error and no IOMMU fault from the card, and about 66 earlier mode changes that night, some with OBS closed and some under other IOMMU modes, ran clean. No earlier boot in the journal has a GPU loss. Recorded as an amdgpu event during a modeset; the soak made no mode changes.
+The GPU (Radeon RX 9070, `amdgpu 0000:03:00.0`) dropped off the PCIe bus twice, each time while `kscreen-doctor` changed HDMI-A-2's mode and the card was capturing from it. Both times the kernel logged `device lost from bus!`, then SMU and display-engine errors, and the desktop stopped responding (the second time the screen went white); the operator rebooted.
+
+| When | Driver | Capturing | Mode changes before the loss | Lost 1.3–3 s after |
+|---|---|---|---|---|
+| 2026-10-19 22:58:47 | `7784170` (DKMS 6.7), `zero_copy=1` | OBS at 1280×720, zero-copy | 1 | 720p → 2160p60 |
+| 2026-10-20 07:47:56 | `6432897`, `zero_copy=1 debug_dma=0` | `v4l2-ctl` at 1920×1080 | about 17, alternating 1080p60 and 2160p60 every 6 s (the 6.10 check) | 2160p60 → 1080p60 |
+
+What didn't lose the GPU: about 66 mode changes in the 6.17 matrix runs (driver 6.6 and 6.7, normal, `iommu=pt` and IOMMU-off boots), where each mode was set **before** a capture started; 120 resolution changes from the Switch 2 during capture (6.8); the 8-hour session (no mode changes). The card sits behind the chipset (00:02.1) and the GPU on a CPU root port (00:01.1), in different IOMMU groups; neither loss came with an AER error or an IOMMU fault from the card.
+
+Two explanations fit and the runs so far can't tell them apart:
+1. The engine restart that 6.8 added for every input-size change while capturing (`bf3ede3`) makes the card's HDMI receiver react in a way that hangs the GPU's display engine mid-modeset.
+2. A GPU mode change while the card's receiver is capturing hangs the GPU regardless of the driver version (receiver or amdgpu behaviour).
+
+A run with a driver from before `bf3ede3` (DKMS 6.3), making GPU mode changes while capturing, would decide it; it risks another lockup, so it waits for the operator. Until then no mode changes are made on the GPU output while capturing, and the 6.10 mode-change check uses the Switch 2.
 
 ### Not done
 
