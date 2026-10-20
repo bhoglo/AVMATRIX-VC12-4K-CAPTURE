@@ -4521,33 +4521,23 @@ static u32 READ_REGISTER_ULONG (struct hws_pcie_dev *pdx,u32 RegisterOffset)
 	return(ioread32(bar0+RegisterOffset));
 }
 //----------------------------------------------
+/*
+ * Wait for register 0 bit 3 (mainline: DMA busy) to clear after a stop, at
+ * most 200 ms. It used to wait forever and print a line every 10 ms.
+ */
 static int Check_Busy(struct hws_pcie_dev *pdx)
 {
-	u32  statusreg;
-	u32 TimeOut = 0;
-	//DbgPrint(("Check Busy in !!!\n"));
-	//WRITE_REGISTER_ULONG((u32)(0x4000), 0x10);
-	while (1)
-	{
-		statusreg = READ_REGISTER_ULONG(pdx,(u32)(CVBS_IN_BASE));
-		printk("[MV] Check_Busy!!! statusreg =%X\n", statusreg);
-		if (statusreg == 0xFFFFFFFF)
-		{
-			break;
-		}
-		if ((statusreg & 0x08) == 0x00)
-		{
-			break;
-		}
-		TimeOut++;
+	u32 statusreg;
+	int tries;
+
+	for (tries = 0; tries < 20; tries++) {
+		statusreg = READ_REGISTER_ULONG(pdx, CVBS_IN_BASE);
+		if (statusreg == 0xFFFFFFFF || !(statusreg & 0x08))
+			return 0;
 		msleep(10);
 	}
-	//WRITE_REGISTER_ULONG((u32)(0x4000), 0x10);
-
-
-	//DbgPrint(("Check Busy out !!!\n"));
-
-	return 0;
+	dev_warn(&pdx->pdev->dev, "card still busy 200 ms after stop (status %#x)\n", statusreg);
+	return -ETIMEDOUT;
 }
 
 static void StopDsp(struct hws_pcie_dev *pdx)
@@ -4555,7 +4545,6 @@ static void StopDsp(struct hws_pcie_dev *pdx)
 	//int j, i;
 	u32  statusreg;
 	statusreg = READ_REGISTER_ULONG(pdx,(u32)(CVBS_IN_BASE));
-	printk("[MV] Busy!!! statusreg =%X\n", statusreg);
 	if (statusreg == 0xFFFFFFFF)
 	{
 		return;
