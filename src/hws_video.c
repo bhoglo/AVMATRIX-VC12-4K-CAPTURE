@@ -5809,6 +5809,7 @@ static int ChangeVideoSize(struct hws_pcie_dev *pdx,int ch,int w,int h,int inter
 	    (v->zc_prog[0] || v->zc_prog[1] || v->zc_cur || !list_empty(&v->zc_release))) {
 		hws_video_quiesce(pdx, ch);
 		restart = true;
+		v->zc_restarts++;
 	}
 	hws_zc_stop(pdx, restart);
 	if(SetVideoFormteSize(pdx,ch,w,h) != 1)
@@ -6345,9 +6346,9 @@ static int hws_dbg_status_show(struct seq_file *m, void *unused)
 		   READ_ONCE(pdx->irq_audio), READ_ONCE(pdx->irq_fifo_full),
 		   READ_ONCE(pdx->irq_unknown), READ_ONCE(pdx->irq_unknown_bits));
 	seq_printf(m, "copy path: frames failed because a copy ended late: %u\n", READ_ONCE(v->late_copies));
-	seq_printf(m, "zero-copy: %s; frames %u, failed %u, late writes %u, buffers outside the window %u%s\n",
+	seq_printf(m, "zero-copy: %s; frames %u, failed %u, late writes %u, buffers outside the window %u, engine restarts for a size change %u%s\n",
 		   hws_zc_unavailable(pdx) ?: (zero_copy ? "on" : "off"),
-		   v->zc_frames, v->zc_errors, v->zc_late, v->zc_outside,
+		   v->zc_frames, v->zc_errors, v->zc_late, v->zc_outside, v->zc_restarts,
 		   v->zc_cur || v->zc_next ? ", in use" : "");
 	seq_printf(m, "audio: gaps filled with silence: %u, silence packets: %u%s\n",
 		   READ_ONCE(pdx->audio[0].silence_gaps), READ_ONCE(pdx->audio[0].silence_pkts),
