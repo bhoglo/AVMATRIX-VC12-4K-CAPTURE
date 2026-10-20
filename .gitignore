@@ -1,0 +1,15 @@
+# kbuild output
+*.o
+*.ko
+*.mod
+*.mod.c
+.*.cmd
+Module.symvers
+modules.order
+.tmp_versions/
+
+# written by the legacy installer
+hws_install.log
+
+# Python
+__pycache__/
