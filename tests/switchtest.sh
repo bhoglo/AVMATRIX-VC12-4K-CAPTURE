@@ -5,10 +5,11 @@
 # Usage: tests/switchtest.sh WIDTH HEIGHT [CHANGES]
 #
 # Streams WIDTH x HEIGHT through framecheck.py and logs each input-size
-# change the driver sees, with the time from the change to the first frame
-# of the new size. Stops after CHANGES changes (default 40: 20 each way) or
-# on Ctrl-C, then prints the frame check, the zero-copy counters and the
-# kernel log lines that would show an overrun.
+# change the driver sees (the "no usable signal" between two sizes is not a
+# change), with how long the frame counter then stalled. Stops after CHANGES
+# changes (default 40: 20 each way) or on Ctrl-C, then prints the frame
+# check, the zero-copy counters and the kernel log lines that would show an
+# overrun. LOG=path keeps the v4l2-ctl log.
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 BDF=${BDF:-0000:0b:00.0}
@@ -16,7 +17,7 @@ DEV=${DEV:-/dev/video0}
 DBG=/sys/kernel/debug/hws-$BDF
 w=${1:?width} h=${2:?height} want=${3:-40}
 OUT=$(mktemp -d)
-trap 'rm -rf "$OUT"' EXIT
+trap '[ -n "${LOG:-}" ] && cp "$OUT/cap.log" "$LOG"; rm -rf "$OUT"' EXIT
 
 pgrep -x obs >/dev/null && { echo "close OBS first"; exit 1; }
 st() { sudo -n cat "$DBG/status"; }
@@ -41,10 +42,13 @@ input() { st | awk '/^input:/{print $2}'; }
 stop=0
 trap 'stop=1' INT
 cur=$(input) n=0
+until [[ $cur =~ ^[0-9]+x[0-9]+$ ]]; do sleep 0.05; cur=$(input); done
 echo "input $cur; switch the source now ($want changes, Ctrl-C to stop early)"
 while [ "$stop" = 0 ] && [ "$n" -lt "$want" ] && kill -0 "$cap" 2>/dev/null; do
     sleep 0.05
     now=$(input)
+    # a switch passes through "no usable signal"; count only size to size
+    [[ $now =~ ^[0-9]+x[0-9]+$ ]] || continue
     [ "$now" = "$cur" ] && continue
     t0=$(date +%s.%N) f0=$(frames)
     n=$((n + 1))
