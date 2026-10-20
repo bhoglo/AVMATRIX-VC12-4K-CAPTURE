@@ -516,3 +516,52 @@ Driver `2399b61` (DKMS `1.0.0.230324.6.5`, srcversion `0C2CDA11DC242C44B3B5C8C`)
 - **Recovery:** after each change the frame counter moved again within 18–93 ms (no-signal frames count).
 - **Tooling fixes found by run B:** `framecheck.py` counted buffers dequeued with the error flag as frames (zero timestamp and sequence), and `switchtest.sh` counted each "no usable signal" as a size change. Both fixed in `144057f`.
 - **Every size change restarts the engine, driver `bf3ede3` (DKMS `1.0.0.230324.6.6`, srcversion `3AB0CB5F8F9E57212FEA2AA`), `zero_copy=0 debug_dma=1`.** Run C: OBS at 1920×1080 and the `v4l2-ctl` stream, both on the copy path; 40 size changes (20 up to 4K, 18 down, and one through a transient 1920×2104). 9,822 frames, 0 sequence repeats, 0 error buffers, 10 sequence gaps (frames lost at switches); the frame counter moved again within 19–83 ms. 41 restarts during the run, one more than the changes the script saw, since a transient size can last less than its 50 ms poll. 0 `IO_PAGE_FAULT`, **0 stray writes**, no WARNING or BUG.
+
+## 6.17: hardware validation pass
+
+### Resolution matrix
+
+Driver `bf3ede3` (DKMS `1.0.0.230324.6.6`), `debug_dma=1`, OBS closed. The PC's GPU (AMD, HDMI-A-2) drove the card's input. `tests/modematrix.sh` set each mode with `kscreen-doctor`, waited for the driver to report it, and captured 300 frames at the native size through `framecheck.py`, walking up and back down, with `zero_copy` 0 and then 1. The desktop on that output was static, so unique frames don't mean anything here.
+
+| zero_copy | GPU mode | Driver input | fps | delta median / stdev ms | unique | gaps | repeats | errors | zero-copy frames |
+|---|---|---|---|---|---|---|---|---|---|
+| 0 | 1280x720@60.00 | 1280x720 | 60.00 | 16.67 / 0.00 | 2/300 | 0 | 0 | 0 | 0 |
+| 0 | 1920x1080@60.00 | 1920x1080 | 60.00 | 16.67 / 0.00 | 2/300 | 0 | 0 | 0 | 0 |
+| 0 | 2560x1440@59.95 | 2560x1440 | 59.95 | 16.68 / 0.01 | 2/300 | 0 | 0 | 0 | 0 |
+| 0 | 3840x2160@60.00 | 3840x2160 | 60.00 | 16.67 / 0.00 | 2/300 | 0 | 0 | 0 | 0 |
+| 0 | 1920x1080@120.00 | 1920x1080 | 119.86 | 8.33 / 0.09 | 2/300 | 0 | 0 | 0 | 0 |
+| 0 | 1920x1080@239.96 | 1920x1080 | 235.56 | 4.17 / 1.13 | 7/300 | 0 | 0 | 0 | 0 |
+| 0 | 1920x1080@120.00 | 1920x1080 | 120.00 | 8.33 / 0.00 | 2/300 | 0 | 0 | 0 | 0 |
+| 0 | 3840x2160@60.00 | 3840x2160 | 60.00 | 16.67 / 0.00 | 2/300 | 0 | 0 | 0 | 0 |
+| 0 | 2560x1440@59.95 | 2560x1440 | 59.95 | 16.68 / 0.02 | 2/300 | 0 | 0 | 0 | 0 |
+| 0 | 1920x1080@60.00 | 1920x1080 | 60.00 | 16.67 / 0.00 | 2/300 | 0 | 0 | 0 | 0 |
+| 0 | 1280x720@60.00 | 1280x720 | 60.00 | 16.67 / 0.01 | 2/300 | 0 | 0 | 0 | 0 |
+| 1 | 1280x720@60.00 | 1280x720 | 60.00 | 16.67 / 0.06 | 2/300 | 0 | 0 | 0 | 297 |
+| 1 | 1920x1080@60.00 | 1920x1080 | 60.00 | 16.67 / 0.00 | 2/300 | 0 | 0 | 0 | 297 |
+| 1 | 2560x1440@59.95 | 2560x1440 | 59.95 | 16.68 / 0.01 | 2/300 | 0 | 0 | 0 | 297 |
+| 1 | 3840x2160@60.00 | 3840x2160 | 60.00 | 16.67 / 0.00 | 2/300 | 0 | 0 | 0 | 297 |
+| 1 | 1920x1080@120.00 | 1920x1080 | 120.00 | 8.33 / 0.00 | 2/300 | 0 | 0 | 0 | 297 |
+| 1 | 1920x1080@239.96 | 1920x1080 | 239.96 | 4.17 / 0.00 | 3/300 | 0 | 0 | 0 | 297 |
+| 1 | 1920x1080@120.00 | 1920x1080 | 120.00 | 8.33 / 0.00 | 2/300 | 0 | 0 | 0 | 297 |
+| 1 | 3840x2160@60.00 | 3840x2160 | 60.00 | 16.67 / 0.00 | 2/300 | 0 | 0 | 0 | 297 |
+| 1 | 2560x1440@59.95 | 2560x1440 | 59.95 | 16.68 / 0.01 | 2/300 | 0 | 0 | 0 | 297 |
+| 1 | 1920x1080@60.00 | 1920x1080 | 60.00 | 16.67 / 0.00 | 2/300 | 0 | 0 | 0 | 297 |
+| 1 | 1280x720@60.00 | 1280x720 | 60.00 | 16.67 / 0.01 | 2/300 | 0 | 0 | 0 | 297 |
+
+- **1080p240 on the copy path,** first pass: 235.56 fps over 300 frames with no gaps, repeats or errors. Two repeats of that mode alone with 1,200 frames gave 239.96 fps on both paths, so it was the start of the stream right after the mode change, not a sustained shortfall.
+- Zero-copy took 297 of 300 frames at every size; the first frames of a stream use the copy path by design.
+
+### Audio from a source that isn't 48 kHz
+
+Driver `bf3ede3`. The card's EDID declares one audio format, 2-channel LPCM at 48 kHz, and the GPU's HDMI port (`hw:2,9`) then offers only 32 and 48 kHz. **A 44.1 kHz source can't be produced from this PC,** so that check isn't done. A source that ignores the EDID would be needed. 32 kHz stood in for it: a 1 kHz tone played straight to `hw:2,9`, captured from `hw:0,0` at 48 kHz.
+
+| Source | Delivered | Content |
+|---|---|---|
+| 48 kHz, 1 kHz tone | 192,000 frames in 3.97 s | 1,000.0 Hz, full level |
+| 32 kHz, 1 kHz tone | 192,000 frames in 3.99 s | 97.7% silence from the driver's silence fill; a few packets of 32 kHz samples played as 48 kHz (about 1,500 Hz) |
+
+So with a source rate the card doesn't support, the stream keeps its 48 kHz pace and is mostly silent, with no rate drift and no garbage at full scale. It isn't usable audio. That's expected, since the EDID rules the rate out.
+
+### Stale audio at each start (6.20)
+
+The 32 kHz capture began with 1,024 frames that exactly matched the end of the 48 kHz capture before it. With 48 kHz only, alternating a 1 kHz and a 500 Hz tone, one capture of each, three pairs: every capture started with one or two packets (21–43 ms) of the previous capture's tone, even right after a module reload. Clearing the driver's audio ring before the enable changed nothing, so the card sends them. Driver `7784170` (DKMS `1.0.0.230324.6.7`, srcversion `76CCE9310DB87869487B36C`) drops the first two packets after each audio start: in five pairs, all 10 captures started with their own tone from frame 0.

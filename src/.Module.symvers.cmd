@@ -1,1 +1,0 @@
-savedcmd_Module.symvers :=  /usr/src/kernels/7.2.10-200.nobara.fc44.x86_64/scripts/mod/modpost -M    -a    -N  -o Module.symvers -n -T modules.order -i /usr/src/kernels/7.2.10-200.nobara.fc44.x86_64/Module.symvers -e 
