@@ -111,6 +111,7 @@
 #define PCI_E_BAR_ADD_LOWMASK 0x1FFFFFFF
 
 #define MAX_DMA_AUDIO_PK_SIZE      128*16*2
+#define HWS_AUDIO_STALE_PKTS       2	/* old packets the card sends after an audio enable */
 
 #ifndef TRUE
 #define TRUE 1
@@ -547,6 +548,7 @@ struct hws_pcie_dev {
 	uint8_t	  m_pAudioEvent[MAX_VID_CHANNELS];
 	uint8_t m_bAudioRun[MAX_VID_CHANNELS];
 	uint8_t m_bAudioStop[MAX_VID_CHANNELS];
+	uint8_t m_AudioSkip[MAX_VID_CHANNELS];	/* stale packets still to drop */
 	int       m_nRDAudioIndex[MAX_VID_CHANNELS];
 	u32       m_dwAudioPTKSize;
 	//-----------------------------
