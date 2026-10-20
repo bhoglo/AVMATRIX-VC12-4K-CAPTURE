@@ -452,3 +452,11 @@ The repositories carry no debug kernel, so one was built on 2026-10-19: `7.2.10-
 - **Reports from elsewhere:** a suspicious-RCU warning in `kernel/sched/fair.c` 1.5 s into boot, before the driver loads, and a DMA API warning from `udmabuf`, used by `kwin_wayland`. Neither involves this driver.
 - **Buffers outside the window:** 0 through the four streaming cases, then 174 during the 100 zero-copy start/stop cycles, the same count as on the normal kernel. So it reproduces on a fresh boot and comes from rapid open, stream, close cycles. Those frames used the copy path, the designed fallback. Likely cause, inferred and not measured: with the IOMMU in `DMA-FQ` mode, freed addresses are reused only after the flush queue empties, so quick reallocations get lower addresses, below the card's 512 MiB window. 6.17 checks this.
 - **Not covered here:** the suspend tests, since the debug kernel was booted only once.
+
+## Stage 6: simulated card reset (6.2)
+
+On the debug kernel `7.2.10-hwsdebug` (with `CONFIG_DEBUG_ATOMIC_SLEEP` and lockdep), driver `5815209` loaded with `debug_dma=1` and `zero_copy=1`. Writing to debugfs `simulate_reset` sets register 0 to 0x10, which clears the run bit.
+
+- **Idle:** reset, then `arecord` for 3 s. The driver logged "card had lost its run state; re-initialised", and 144 audio packets arrived in 3 s (full rate is about 141). No atomic-sleep, lockdep or KASAN report.
+- **During a 4K zero-copy stream:** reset at frame 185, then `arecord` 1 s later. Video stopped at the reset. The two zero-copy buffers in flight completed with an error. The re-init followed the audio start, and frames resumed at sequence 187 (one dropped), 1.1 s after the reset, at 16.67 ms spacing. No report from the checkers; zero-copy 0 failed, 0 late writes.
+- **Gap found:** only an audio start notices a lost run state. Without one, video would stay stopped. Follow-up: let the status thread check the run bit on every poll while capture runs.
