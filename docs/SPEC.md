@@ -214,7 +214,7 @@ This stage needs vendor binaries that aren't public. AVMatrix publishes no SDK o
 
 ## Stage 6: fixes from the release audit
 
-**Status (2026-10-19): code done for 6.1 to 6.7 and 6.10 to 6.15 on `fix/release-audit`, built on 7.2.6, 7.2.9 and 7.2.10; none of it has run on the card yet. 6.9 needs its probe first, and 6.8 needs 6.9. 6.14 also fixes LINUX-022, found while writing it.** [AUDIT.md](AUDIT.md) has the evidence for each finding, with line numbers at `66d3773`. Each item below names the findings it closes. Items 6.1 to 6.4 and 6.14 must land before the first upstream PR (4.7) and before a public release (7.8).
+**Status (2026-10-20): stage 6 done.** Every item from 6.1 to 6.21 is closed on `fix/release-audit` and checked on the card, except 6.21, closed as a known issue. Results are in [results.md](results.md); the driver runs as DKMS `1.0.0.230324.6.9`. [AUDIT.md](AUDIT.md) has the evidence for each finding, with line numbers at `66d3773`. Each item below names the findings it closes. Items 6.1 to 6.4 and 6.14 must land before the first upstream PR (4.7) and before a public release (7.8).
 
 **Where the fixes go (decided 2026-10-19).** Stage 6 work goes on a new branch, `fix/release-audit`, on top of `feat/zero-copy`. Stage 7 goes on `release/packaging`, on top of that. No pushed branch is rewritten. Upstream never gets these branches as they are: the [upstream PR series](#upstream-pr-series) rebuilds them from upstream `main` in small PRs, and folds each stage 6 fix into the PR whose code it fixes.
 
