@@ -5927,6 +5927,10 @@ int MainKsThreadHandle(void *arg)
 	while(!kthread_should_stop())
 	{
 		try_to_freeze();
+		/* a card that lost its run state while capturing is re-initialised here too, not only at an audio start */
+		for (i = 0; i < pdx->m_nCurreMaxVideoChl; i++)
+			if (pdx->m_bVCapStarted[i] || pdx->m_bACapStarted[i])
+				hws_request_reinit(pdx);
 		hws_do_reinit(pdx);
 
 		need_check=0;
