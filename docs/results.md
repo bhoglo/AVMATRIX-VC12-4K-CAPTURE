@@ -475,3 +475,17 @@ Driver `af5925d` (DKMS `1.0.0.230324.6.2`) on 7.2.10, `zero_copy=1`, OBS closed.
 
 - **Audio content:** the Switch was sending digital silence during these runs. The card delivered real packets at about 47 per second with no silence fill, so the stream itself restarts and runs, but this run doesn't show sound returning after a resume. The operator's OBS session (first session above) does.
 - **Unrelated:** each resume logs a firmware "TSC ADJUST differs" line from the BIOS.
+
+## Stage 6: fault-injection builds (6.1, 6.5, 6.6)
+
+A test-only copy of `af5925d`, never committed, with a module parameter `hws_fault` and log lines where the sound card and `hws_pcie_dev` are freed. Loaded with `insmod` in place of the installed driver on 7.2.10, then replaced by the installed driver again (srcversion `A3BA6FC3CEE7AB5988D4D63`, zero-copy working).
+
+| Fault | Result |
+|---|---|
+| 1: FPGA version forced to 0 (6.1) | "zero_copy is on but unavailable: needs FPGA 122 or later; using the copy path" in the log, the same reason in debugfs `status`; 120 frames captured through the copy path; input capped at 3840 wide |
+| 2: `snd_pcm_new()` fails (6.5) | probe fails; no video node or sound card left; the sound card and `hws_pcie_dev` are both freed; `rmmod` works |
+| 3: `snd_card_register()` fails (6.5) | the same |
+| 4: `hws_audio_register()` fails as a whole (6.5) | probe fails; the status thread is stopped; `hws_pcie_dev` freed; `rmmod` works |
+| 5: register 0 bit 3 stuck at stop (6.6) | unbind took 242 ms with one warning, "card still busy 200 ms after stop"; everything freed; `rmmod` works |
+
+No BUG, WARNING or oops in any run. kmemleak isn't in this kernel; the free markers stand in for it.
