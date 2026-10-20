@@ -4062,6 +4062,92 @@ static void hws_deliver_no_video(struct hws_pcie_dev *pdx, int ch)
 	hws_finish_frame(v, VB2_BUF_STATE_DONE, ktime_get_ns(), pdx->m_FrameSeq[ch]++, out_size);
 }
 
+
+/*
+ * PROBE 6.9, branch probe/dma-stop only: how does the card stop DMA?
+ * debug_dma only, zero-copy off, the card's own DMA buffers only. Armed by
+ * writing debugfs probe_dma_stop. At a top-half interrupt quarters 0 and 1
+ * (idle until the next frame) are filled with a pattern. At the next
+ * frame-end interrupt, 2 ms in (the card is inside quarter 0), the video
+ * enable bit is cleared and read back. For 50 ms the extent of quarter 0
+ * that the card has written, and register 0, are sampled; then a full scan
+ * checks that the written part is one prefix and whether quarter 1 started.
+ */
+#define HWS_PROBE_FILL 0x5AFEC0DEu
+static void EnableVideoCapture(struct hws_pcie_dev *pdx,int index,int en);
+static int hws_probe_state;	/* 0 idle, 1 armed, 2 quarters filled */
+
+/* first index that still holds the fill, if the card wrote a prefix */
+static u32 hws_probe_bound(const u32 *b, u32 words)
+{
+	u32 lo = 0, hi = words, mid;
+
+	while (lo < hi) {
+		mid = lo + (hi - lo) / 2;
+		if (READ_ONCE(b[mid]) == HWS_PROBE_FILL)
+			hi = mid;
+		else
+			lo = mid + 1;
+	}
+	return lo;
+}
+
+static void hws_probe_dma_stop(struct hws_pcie_dev *pdx, int half, u64 ts)
+{
+	static const u32 at_us[] = { 0, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000 };
+	struct hws_video *v = &pdx->video[0];
+	u32 *q0 = (u32 *)pdx->m_pbyVideoBuffer[0], *q1 = (u32 *)pdx->m_pbyVideoBuffer[1];
+	u32 w0 = v->frame_len[0] / 4, w1 = v->frame_len[1] / 4;
+	u32 bound[ARRAY_SIZE(at_us)], st[ARRAY_SIZE(at_us)];
+	u32 k, last = 0, holes = 0, changed1 = 0;
+	bool any = false;
+	u64 t_dis;
+	int i;
+
+	if (v->zc_cur || v->zc_next || v->zc_prog[0] || v->zc_prog[1] || !w0 || !w1) {
+		dev_warn(&pdx->pdev->dev, "probe 6.9: zero-copy in use or no frame yet; set zero_copy=0, restart the stream, arm again\n");
+		hws_probe_state = 0;
+		return;
+	}
+	if (hws_probe_state == 1 && half) {
+		memset32(q0, HWS_PROBE_FILL, w0);
+		memset32(q1, HWS_PROBE_FILL, w1);
+		hws_probe_state = 2;
+		return;
+	}
+	if (hws_probe_state != 2 || half)
+		return;
+	hws_probe_state = 0;
+	while (ktime_get_ns() < ts + 2 * NSEC_PER_MSEC)
+		cpu_relax();
+	EnableVideoCapture(pdx, 0, 0);	/* clears bit 0 of register 2, then reads it back */
+	t_dis = ktime_get_ns();
+	for (i = 0; i < ARRAY_SIZE(at_us); i++) {
+		while (ktime_get_ns() < t_dis + (u64)at_us[i] * NSEC_PER_USEC)
+			cpu_relax();
+		bound[i] = hws_probe_bound(q0, w0);
+		st[i] = READ_REGISTER_ULONG(pdx, CVBS_IN_BASE);
+	}
+	for (k = 0; k < w0; k++)
+		if (READ_ONCE(q0[k]) != HWS_PROBE_FILL) {
+			last = k;
+			any = true;
+		}
+	for (k = 0; any && k < last; k++)
+		if (READ_ONCE(q0[k]) == HWS_PROBE_FILL)
+			holes++;
+	for (k = 0; k < w1; k++)
+		if (READ_ONCE(q1[k]) != HWS_PROBE_FILL)
+			changed1++;
+	dev_info(&pdx->pdev->dev, "probe 6.9: capture disabled %llu us after the frame-end interrupt; quarter 0 is %u bytes\n",
+		 div_u64(t_dis - ts, NSEC_PER_USEC), w0 * 4);
+	for (i = 0; i < ARRAY_SIZE(at_us); i++)
+		dev_info(&pdx->pdev->dev, "probe 6.9:   +%u us: quarter 0 written up to byte %u, register 0 %#x (bit 3 = %u)\n",
+			 at_us[i], bound[i] * 4, st[i], (st[i] >> 3) & 1);
+	dev_info(&pdx->pdev->dev, "probe 6.9: full scan: last written byte of quarter 0 at %u, %u unwritten words below it; quarter 1: %u words written\n",
+		 any ? (last + 1) * 4 : 0, holes, changed1);
+}
+
 /* Threaded half of the interrupt: assemble frames from the halves irqhandler queued. */
 static irqreturn_t hws_irq_thread(int irq, void *info)
 {
@@ -4073,6 +4159,8 @@ static irqreturn_t hws_irq_thread(int irq, void *info)
 		mutex_lock(&v->cap_lock);
 		if (pdx->m_bVCapStarted[0] && !pdx->m_curr_No_Video[0])
 			hws_video_half(pdx, 0, ev.half, ev.ts);
+		if (hws_probe_state && pdx->m_bVCapStarted[0])
+			hws_probe_dma_stop(pdx, ev.half, ev.ts);
 		mutex_unlock(&v->cap_lock);
 	}
 	return IRQ_HANDLED;
@@ -6437,6 +6525,18 @@ static ssize_t hws_dbg_reset_write(struct file *f, const char __user *buf, size_
 	return n;
 }
 
+static ssize_t hws_dbg_probe_write(struct file *f, const char __user *buf, size_t n, loff_t *pos)
+{
+	hws_probe_state = 1;	/* probe 6.9, see hws_probe_dma_stop() */
+	return n;
+}
+
+static const struct file_operations hws_dbg_probe_fops = {
+	.owner = THIS_MODULE,
+	.write = hws_dbg_probe_write,
+	.llseek = noop_llseek,
+};
+
 static const struct file_operations hws_dbg_reset_fops = {
 	.owner = THIS_MODULE,
 	.write = hws_dbg_reset_write,
@@ -6454,6 +6554,7 @@ static void hws_debugfs_init(struct hws_pcie_dev *pdx)
 	if (debug_dma) {
 		debugfs_create_file("regsnaps", 0444, pdx->dbg, pdx, &hws_dbg_regsnaps_fops);
 		debugfs_create_file("simulate_reset", 0200, pdx->dbg, pdx, &hws_dbg_reset_fops);
+		debugfs_create_file("probe_dma_stop", 0200, pdx->dbg, pdx, &hws_dbg_probe_fops);
 	}
 }
 
