@@ -762,3 +762,24 @@ The window count stood at 232 before `zctest.sh` began: `v4l2-compliance -s` run
 ### Build output in the branch, and a stale DKMS module
 
 `7784170` staged `src/` with `git add -A` and so committed the kbuild output of a local build (`.o`, `.ko`, `.cmd`, `.mod.c`); `aeafbaa` and `6432897` updated it. Upstream tracks none of these. `tools/dkms-install.sh` packed all of `src/` from git, so the objects reached DKMS, and for DKMS `1.0.0.230324.6.8` kbuild reused the committed `hws_video.o` on 7.2.10 instead of compiling: that module held the code from `6432897` (it still had the removed queue code; srcversion `FBA939D1AAC60E8C53BE29D`, unlike the other kernels). Earlier installs weren't affected in practice, since the committed objects matched their commit's source (6.7 had the same srcversion on every kernel). `b5c3a3d` removes the build output from the index and makes the installer take only `Makefile`, `dkms.conf` and the three source files. 6.8 was removed from DKMS and 6.9 installed; all its modules have the same srcversion and none has the removed code. When the series is split into PRs, those three commits must leave out their `src/` build output.
+
+## Stage 7: build hygiene, probe-tool checks, unit tests (7.5–7.7)
+
+On branch `release/packaging` (from `fix/release-audit`), kernel 7.2.11.
+
+- **7.7 (`d763565`, `51591a2`):** `.gitignore` for kbuild output, `hws_install.log`, `__pycache__` and the unit-test binaries; `src/Makefile` uses `ccflags-y` (kbuild hasn't read `EXTRA_CFLAGS`/`EXTRA_LDFLAGS` for a long time; the compiled `hws_video.o` is byte-for-byte the same); `src/load.sh` removed; a `.pyc` committed by mistake untracked. After a build and a test run `git status` is clean.
+- **7.6 (`bec1b0d`):** `tests/regprobe.py` requires `--pci` and refuses, before opening `resource0`, anything but an 8888:8581 bound to `HwsUHDX1Capture`. Run without root, so a missed check would show as a permission error: the GPU's address (0x1002:0x7550), a missing device and a malformed address were refused; the card's address reached the open. The shell tests find the card under the driver's sysfs directory.
+- **7.5 (`f4cdc78`, `df257a7`, `d37885a`, `6388717`):** the scalers moved unchanged to `src/hws_scale.c` and the pure calculations to `src/hws_calc.h`; `make -C tests/unit check` builds them in userspace under ASan and UBSan (clang with compiler-rt; GCC needs `libasan` and `libubsan`, not installed here). It takes about 3 s.
+
+| Test | Result |
+|---|---|
+| Quarter sizes, every even input size to 4096×2160 | pass; 4K 4,147,200 / 4,149,248 and 1080p 1,036,288 / 1,040,384 bytes, as read on the card |
+| Zero-copy slack | worst case 4096 bytes (2×512); `HWS_ZC_SLACK` 8192 passes; rebuilt with 4095 it fails, as required |
+| Rate snapping, rate window, preset choice, counter wraparound | pass |
+| `VideoScaler()`, 340 input/output pairs | pass after the fix below |
+
+**Two findings in the vendor's scalers:**
+1. `UHDW_To_2560X1440_Scaler()` (4096×2160 → 2560×1440) reads 16 source bytes per 6 output pixels: each row reads 10,240 bytes of an 8,192-byte row, and the last row reads past the frame. In the driver the source is a `vmalloc()` buffer of exactly one 4096×2160 frame (a whole number of pages), so the read would hit the guard page and oops. This card scales 4096-wide sources to 3840, so it can't happen here; other cards are untested. Fixed in `d37885a`: that pair goes to the general scaler, and the function is removed.
+2. Several fixed-size scalers (first `FHD_To_HD_Scaler()`) load pixels through `int *` at odd byte offsets: undefined behaviour in C, harmless on x86-64, a fault on CPUs that trap misaligned loads. Not changed; the unit tests build `hws_scale.c` with UBSan's alignment check off. x86-64 stays the only tested architecture.
+
+**On the card** (DKMS `1.0.0.230324.7.0`, srcversion `C334345BE2C7FC8E110FBD2`, the PC's GPU at 3840×2160p60, no mode changes): `G_PARM` 60/1 idle and while capturing (measured 16,666,974 ns); DV timings the CTA-861 preset, VIC 97; a 1920×1080 capture from the 4K input (scaled) 60.00 fps, no gaps; `tests/zctest.sh` all cases 60.00 fps, zero-copy 0 failed, 0 outside the window; `v4l2-compliance -s` 58 of 59 (the by-design `reqbufs != EBUSY`); no `IO_PAGE_FAULT`, WARNING or BUG.
