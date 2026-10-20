@@ -3456,7 +3456,12 @@ static int  MemCopyFrame(int nDecoder,BYTE * dest,int nWidth,int nHeight,int int
 /* Register 8: the source is using HDCP on channel @ch (stage 4.1). */
 static bool hws_hdcp_active(struct hws_pcie_dev *pdx, int ch)
 {
-	return !pdx->m_PciDeviceLost && (READ_REGISTER_ULONG(pdx, HWS_REG_HDCP_STATUS) >> ch) & 1;
+	u32 v;
+
+	if (pdx->m_PciDeviceLost)
+		return false;
+	v = READ_REGISTER_ULONG(pdx, HWS_REG_HDCP_STATUS);
+	return v != 0xFFFFFFFF && ((v >> ch) & 1);	/* all ones: the card isn't answering */
 }
 
 /* the driver writes this word after reading a half; the card overwrites it when it refreshes the half */
