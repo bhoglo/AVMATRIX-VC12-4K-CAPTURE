@@ -489,3 +489,12 @@ A test-only copy of `af5925d`, never committed, with a module parameter `hws_fau
 | 5: register 0 bit 3 stuck at stop (6.6) | unbind took 242 ms with one warning, "card still busy 200 ms after stop"; everything freed; `rmmod` works |
 
 No BUG, WARNING or oops in any run. kmemleak isn't in this kernel; the free markers stand in for it.
+
+## 6.9: DMA-stop probe (driver `584abbb`, branch `probe/dma-stop`)
+
+The probe build ran on branch `probe/dma-stop`; that code is debug-only and not in the stage branches. Loaded with `insmod`, `debug_dma=1`, `zero_copy=0` (so the card wrote only the driver's DMA buffers), IOMMU `DMA-FQ`, the Switch 2 at 3840×2160p60, one `v4l2-ctl` stream. Three runs, each on a fresh stream.
+
+- **Method:** at a top-half interrupt the probe filled quarters 0 and 1 (idle until the next frame) with a pattern. 2,041 µs after the next frame-end interrupt, with the card inside quarter 0, it cleared the video enable bit and read register 2 back. It then sampled how far the card had written into quarter 0, and register 0, at 0 µs to 50 ms after the disable, and scanned both quarters.
+- **Result, identical in all three runs:** quarter 0 was written up to byte 2,095,104 at the first sample, and not one more byte in the next 50 ms. The written part is a single prefix with no gaps and ends on a 2 KiB boundary. Quarter 1 wasn't touched. Register 0 read 0x3 at every sample: bit 3 stayed 0.
+- **Meaning:** once the cleared enable bit is read back, the card writes nothing more. It finishes the 2 KiB burst in progress before that point. Register 0 bit 3 doesn't show DMA in progress, so waiting on it would prove nothing. `hws_video_quiesce()` relies on the readback and adds a short pause as margin.
+- No BUG, WARNING or `IO_PAGE_FAULT`.
