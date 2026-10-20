@@ -849,3 +849,22 @@ QEMU/KVM with OVMF's Secure Boot firmware and Microsoft keys (`OVMF_CODE.secboot
 
 - **MokManager's timeout:** shim shows "Press any key to perform MOK management" for 10 seconds. Twice the countdown ran out (once on each distribution), and each time the request was dropped (`mokutil --list-new` empty) and the VM booted normally; a second `mokutil --import` and reboot worked. The instructions now say to press a key within 10 seconds and to import again if it times out.
 - On Fedora the module needs `kernel-modules` for whichever kernel boots: after the reboot into 7.2.11 it failed on missing `videodev` symbols until `kernel-modules-7.2.11` was installed (the same minimal-image gap as above, not Secure Boot).
+
+## 7.2: the README
+
+`README.md` rewritten as the user guide (`8f72159`, fixes in `eb6b4eb`). On this machine the check commands ran as written: `v4l2-ctl --list-devices` (HUHDVideo 1, `/dev/video0`), `arecord -l` (HUHDAudio 1), the `DMA buffers` kernel log line, `modinfo -F version` (1.1.0), `lspci -d 8888:`, and the GStreamer pipeline (60 frames at 3840×2160 into `fakesink`).
+
+**Fresh Ubuntu 24.04 VM, Secure Boot on, following the README word for word** (by the guide's author, so this checks the steps, not how clear they are to a newcomer):
+
+| Step | Result |
+|---|---|
+| 1. `sudo apt install dkms gcc make linux-headers-$(uname -r)` | worked |
+| 2. `git clone --branch release/packaging …`, `./install.sh` | Ubuntu's "Configuring Secure Boot" prompt appeared on the terminal and took a password; the installer said the key was queued, and that `videodev` and `videobuf2-vmalloc` were missing, naming `linux-modules-extra-6.8.0-147-generic` |
+| The named package, then 3. reboot and MokManager | Enroll MOK → Continue → Yes → password → Reboot; the key enrolled |
+| 4. the checks | **failed:** `v4l2-ctl` and `arecord` not installed; then `apt install v4l-utils` failed with "Unable to locate package" until `apt update` ran |
+| Driver | loaded with `modprobe` (no card in a VM, so nothing loads it at boot), signed by the VM's own key, version 1.1.0 |
+| Upgrade (`git pull`, `./uninstall.sh`, `./install.sh`) and uninstall | worked; `modinfo` fails afterwards and `dkms status` lists nothing |
+
+Fixed in `eb6b4eb`: step 4 installs `v4l-utils` and `alsa-utils` first; the Ubuntu and Debian command starts with `apt update`; step 4 says the driver loads at boot with the card fitted; and the installer's message for a reinstall of the loaded version no longer calls it "older".
+
+Still open for 7.2: someone who hasn't worked on the driver follows the README on a fresh machine.
