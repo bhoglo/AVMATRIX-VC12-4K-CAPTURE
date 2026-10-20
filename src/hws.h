@@ -457,6 +457,7 @@ struct hws_pcie_dev {
 	/* debugfs (stage 3.5, 3.6) */
 	struct dentry *dbg;
 	u32 irq_total, irq_video, irq_audio, irq_fifo_full;	/* updated only by irqhandler */
+	u32 irq_unknown, irq_unknown_bits;	/* interrupt sources other than bits 0 and 8 */
 	spinlock_t snap_lock;
 	struct hws_regsnap snaps[HWS_REGSNAPS];
 	u32 snap_next;

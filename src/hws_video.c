@@ -3597,6 +3597,8 @@ static const char *hws_zc_unavailable(struct hws_pcie_dev *pdx)
 {
 	if (!pdx->m_DeviceHW_Version || !pdx->m_MaxHWVideoBufferSize)
 		return "needs FPGA 122 or later";
+	if (pdx->pdev->vendor != 0x8888 || pdx->pdev->device != 0x8581)
+		return "tested only on 8888:8581";
 	if (!pdx->zc_iommu)
 		return "IOMMU not translating";
 	return NULL;
@@ -5546,7 +5548,17 @@ static irqreturn_t irqhandler(int irq, void  *info)
 			}
 			#endif
 			//--------------
-			Int_Value = Int_Value&0x00ffffff;
+			/*
+			 * Acknowledge exactly the bits that are set. Int_Value was
+			 * summed across passes (0x01 + 0x01 = 0x02 on a second pass),
+			 * which acknowledged the wrong bit, and bits other than 0 and 8
+			 * (bit 12 is line-in audio on the 8591) were never acknowledged.
+			 */
+			if (IntState & ~0x101u) {
+				pdx->irq_unknown++;
+				pdx->irq_unknown_bits |= IntState & ~0x101u;
+			}
+			Int_Value = IntState & 0x00ffffff;
 			WRITE_REGISTER_ULONG(pdx,(u32)(0x4000 + (PCIE_BARADDROFSIZE * 1)), Int_Value);
 			IntState= READ_REGISTER_ULONG(pdx,(u32)(CVBS_IN_BASE + 1 * PCIE_BARADDROFSIZE));
 			if(IntState == 0) break;
@@ -6267,9 +6279,10 @@ static int hws_dbg_status_show(struct seq_file *m, void *unused)
 	seq_printf(m, "capture: %s, output %dx%d\n", pdx->m_bVCapStarted[0] ? "running" : "stopped",
 		   v->current_out_width, v->curren_out_height);
 	seq_printf(m, "frames: %u, lost: %u\n", READ_ONCE(pdx->m_FrameSeq[0]), READ_ONCE(pdx->m_FramesDropped[0]));
-	seq_printf(m, "interrupts: %u, video halves: %u, audio packets: %u, half queue full: %u\n",
+	seq_printf(m, "interrupts: %u, video halves: %u, audio packets: %u, half queue full: %u, other sources: %u (bits %#x)\n",
 		   READ_ONCE(pdx->irq_total), READ_ONCE(pdx->irq_video),
-		   READ_ONCE(pdx->irq_audio), READ_ONCE(pdx->irq_fifo_full));
+		   READ_ONCE(pdx->irq_audio), READ_ONCE(pdx->irq_fifo_full),
+		   READ_ONCE(pdx->irq_unknown), READ_ONCE(pdx->irq_unknown_bits));
 	seq_printf(m, "zero-copy: %s; frames %u, failed %u, late writes %u, buffers outside the window %u%s\n",
 		   hws_zc_unavailable(pdx) ?: (zero_copy ? "on" : "off"),
 		   v->zc_frames, v->zc_errors, v->zc_late, v->zc_outside,
@@ -6432,6 +6445,9 @@ static int hws_probe(struct pci_dev *pdev, const struct pci_device_id *pci_id)
 	gdev->dwDeviceID = pdev->device;
 	gdev->dwVendorID = pdev->vendor;
 	printk("MV360: Device =%X VID =%X\n",gdev->dwDeviceID,gdev->dwVendorID);
+	if (pdev->vendor != 0x8888 || pdev->device != 0x8581)
+		dev_warn(&pdev->dev, "model %04x:%04x is untested with this driver; only 8888:8581 is tested\n",
+			 pdev->vendor, pdev->device);
 
 	ret = pci_enable_device(pdev);
 	if (ret) {
