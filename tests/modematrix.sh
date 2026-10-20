@@ -23,6 +23,11 @@ shift || true
 ids=("${@:-39 24 17 1 21 20}")
 read -ra ids <<<"${ids[*]}"
 
+# 6.21: three times the PC's GPU (RX 9070) dropped off the PCIe bus during a
+# mode change on the output feeding the card, once with nothing capturing.
+[ "${HWS_ALLOW_GPU_MODESET:-}" = 1 ] || {
+    echo "refusing: GPU mode changes on the card's input have locked up this PC (SPEC 6.21)."
+    echo "Set HWS_ALLOW_GPU_MODESET=1 only with the operator's OK."; exit 1; }
 pgrep -x obs >/dev/null && { echo "close OBS first"; exit 1; }
 was=$(cat "$PARAM")
 LOG=$(mktemp)
