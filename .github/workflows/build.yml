@@ -48,12 +48,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get -qq update && sudo apt-get -qq install -y shellcheck clang
-      # scripts/ holds the legacy installers that 7.1 replaces, and play/ the
-      # vendor's demo scripts; neither passes shellcheck yet
+      # play/ holds the vendor's demo scripts, which don't pass shellcheck
       - name: shellcheck
         run: |
           git ls-files '*.sh' tools/irq-affinity \
-            | grep -vE '^(scripts|play)/' \
+            | grep -v '^play/' \
             | xargs shellcheck
       - name: Python checks that need no card
         run: |
