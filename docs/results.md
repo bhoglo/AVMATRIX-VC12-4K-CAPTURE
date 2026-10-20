@@ -831,3 +831,21 @@ On the card, DKMS `1.0.0.230324.7.1` (srcversion `6A2BEE5356209BF3DF394FF`, both
 | Files written in `/tmp/a b/` | none | none | none |
 
 `install.sh` now names those missing modules and the package that has them (checked on Ubuntu by removing `linux-modules-extra` and running it again). The top-level `dkms-install.sh` goes through `install.sh`. Secure Boot was off in every VM and here, so the MOK message wasn't exercised.
+
+### 7.1 with Secure Boot on
+
+QEMU/KVM with OVMF's Secure Boot firmware and Microsoft keys (`OVMF_CODE.secboot.fd`, `OVMF_VARS.secboot.fd`); MokManager driven through the QEMU monitor (screenshots and key presses). The Arch cloud image has no signed boot chain, so it can't boot with Secure Boot on and isn't covered.
+
+| | Fedora 44 Cloud | Ubuntu 24.04.5 Cloud |
+|---|---|---|
+| `mokutil --sb-state` | SecureBoot enabled | SecureBoot enabled |
+| DKMS signing key | `/var/lib/dkms/mok.pub` (DKMS's own) | `/var/lib/shim-signed/mok/MOK.der` (shim-signed) |
+| `install.sh` | printed the `mokutil --import` steps | first run hung: DKMS's debconf password prompt was hidden by `>/dev/null`. Fixed (`install.sh` commit after `3f9dc84`): output shown, no prompt without a terminal |
+| Before enrolment | `modprobe`: "Key was rejected by service" | the same |
+| Ubuntu's own prompt | — | under a terminal, "Configuring Secure Boot" asked for the password twice and queued the key; `install.sh` then said it was queued instead of asking for a second import |
+| MokManager | Enroll MOK → Continue → Yes → password → Reboot | the same |
+| After enrolment | loaded, `signer` "DKMS module signing key", taint 4096 (out-of-tree only) | loaded, `signer` "sbubuntu Secure Boot Module Signature key", taint 4096 |
+| `install.sh` again | — | no Secure Boot message; loaded |
+
+- **MokManager's timeout:** shim shows "Press any key to perform MOK management" for 10 seconds. Twice the countdown ran out (once on each distribution), and each time the request was dropped (`mokutil --list-new` empty) and the VM booted normally; a second `mokutil --import` and reboot worked. The instructions now say to press a key within 10 seconds and to import again if it times out.
+- On Fedora the module needs `kernel-modules` for whichever kernel boots: after the reboot into 7.2.11 it failed on missing `videodev` symbols until `kernel-modules-7.2.11` was installed (the same minimal-image gap as above, not Secure Boot).
