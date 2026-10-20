@@ -404,3 +404,22 @@ DKMS version `1.0.0.230324.6.0` on 7.2.10, with `zero_copy=1` set in `/etc/modpr
 - **`lspci -vv`:** `RlxdOrd+` on the card, now as the PCI core leaves it (6.12 removed the driver's write).
 - **Seen in passing:** each rate-limited `LOG_STATUS` call still prints the V4L2 core's empty "START STATUS" and "END STATUS" lines. Cosmetic.
 - **Not yet run:** the 6.2 simulated reset, the 6.3 SIGSTOP and start/stop tests, the 6.4 unbind test, the 6.6 and 6.5 test builds, `framecheck.py` runs, and the debug-kernel pass (6.16).
+
+## Stage 6: automated checks (driver `47006b7`)
+
+Run on 2026-10-19 with OBS closed, the Switch 2 sending 3840×2160p60 and `zero_copy=1`.
+
+| Check | Result |
+|---|---|
+| `framecheck.py`, 4 buffers, 300 frames, 3840×2160 (zero-copy) | 60.00 fps, 300 of 300 unique, no gaps, deltas 16.66–16.68 ms |
+| Same at 1920×1080 (CPU scaler) | 60.00 fps, 300 of 300 unique, no gaps |
+| Two 4K streams at once, 300 frames each | both 60.00 fps, 300 of 300 unique, no gaps |
+| Two 4K streams at once, 600 frames each, compared by sequence number | the frames of both streams are identical for every one of the 600 sequence numbers, and all 600 are unique |
+| `tests/zctest.sh`, run twice | every case 60.00 fps with no gaps; IRQ thread 0 ms for zero-copy against 430–440 ms for the copy path; 100 start/stop cycles all passed; no `IO_PAGE_FAULT`, canary hit or WARNING |
+| `v4l2-compliance -s` | 58 of 59; the failure is the by-design `reqbufs != EBUSY` for a second handle |
+| 1,000 ALSA capture start/stop cycles of 512–2048 frames on `hw:0,0` | none failed; no BUG, WARNING or oops |
+| 50 rounds: `arecord` stopped with SIGSTOP mid-capture, then killed | no oops; the card records normally afterwards |
+| 9.5-minute 4K capture (34,200 frames) | 59.999 fps, no sequence gaps, deltas 16.45–16.88 ms, no frame lost; 34,197 zero-copy frames, 0 failed, 0 late writes; other interrupt sources 0; late copies 0 |
+
+- **Unique-frame counts in `zctest.sh`:** the second run gave 401 of 600 unique frames in every case, including the copy path with zero-copy off. The source was repeating frames at that point. The per-sequence comparison shows the two consumers receive identical frames, so this isn't a driver effect.
+- **Buffers outside the window:** debugfs counted 174 during the `zctest.sh` runs (0 before them). Those buffers used the copy path, which is the designed fallback, but zero-copy round 1 saw none. Check after a fresh boot whether the IOVA window fills up during many start/stop cycles (6.17).
