@@ -676,7 +676,9 @@ The third loss came with nothing capturing, so capture isn't required; it follow
 1. The engine restart that 6.8 added for every input-size change while capturing (`bf3ede3`) makes the card's HDMI receiver react in a way that hangs the GPU's display engine mid-modeset.
 2. A GPU mode change on the output feeding this card can hang the GPU, more often when the card's receiver is busy (capturing) or settling (just re-initialised): receiver or amdgpu behaviour, independent of the driver version.
 
-A run with a driver from before `bf3ede3` (DKMS 6.3), making GPU mode changes while capturing, would decide it; it risks another lockup, so it waits for the operator. Until then no mode changes are made on the GPU output feeding the card at all; `tests/modematrix.sh` refuses to run without `HWS_ALLOW_GPU_MODESET=1`.
+**Control run, capture driver unloaded (2026-10-20 08:32–08:35).** Card cabled to HDMI-A-2 and powered, `HwsUHDX1Capture` removed with `rmmod` (no `/dev/video0`), OBS closed. 20 changes alternating 1920×1080p60 and 3840×2160p60, one every 10 s: every mode took, and the kernel logged no `device lost`, `REG_WAIT` or ring timeout. The driver then loaded normally and captured 120 of 120 frames. This points at something the driver does (the card's HDMI receiver with the driver loaded is the remaining difference), but it isn't proof: the second loss came only after about 17 changes at 6 s intervals, and 20 clean changes is a small sample.
+
+A run with a driver from before `bf3ede3` (DKMS 6.3), making GPU mode changes while capturing, would narrow it further; it risks another lockup, so it waits for the operator. Until then no mode changes are made on the GPU output feeding the card at all; `tests/modematrix.sh` refuses to run without `HWS_ALLOW_GPU_MODESET=1`.
 
 ### Not done
 
