@@ -208,45 +208,8 @@ static const framegrabber_pixfmt_t support_pixfmts[] = {
 #endif
 };
 
-static const int framegrabber_support_refreshrate[]= {
-	[REFRESHRATE_15]=15,
-	[REFRESHRATE_24]=24,
-	[REFRESHRATE_25]=25,
-	[REFRESHRATE_30]=30,
-	[REFRESHRATE_50]=50,
-	[REFRESHRATE_60]=60,
-	[REFRESHRATE_100]=100,
-	[REFRESHRATE_120]=120,
-	[REFRESHRATE_144]=144,
-	[REFRESHRATE_240]=240,
-};
-#define NUM_FRAMERATE_CONTROLS (ARRAY_SIZE(framegrabber_support_refreshrate))
-
 //-------------------------------------------
 
-static int v4l2_get_suport_VideoFormatIndex_wh(int w, int h)
-{
-	int index;
-	for(index=0; index<V4L2_MODEL_VIDEOFORMAT_NUM;index++)
-		if(w==support_videofmt[index].frame_size.width && h==support_videofmt[index].frame_size.height)
-			return index;
-	return -1;
-}
-static int v4l2_get_suport_VideoFormatIndex(struct v4l2_format *fmt)
-{
-	struct v4l2_pix_format *pix = &fmt->fmt.pix;
-	int index;
-	int videoIndex=-1;
-	for(index=0; index<V4L2_MODEL_VIDEOFORMAT_NUM;index++)
-	{
-		if((pix->width==support_videofmt[index].frame_size.width)&&(pix->height==support_videofmt[index].frame_size.height))
-		{
-			videoIndex = index;
-			break;
-		}
-	}
-	return videoIndex;
-}
 v4l2_model_timing_t *v4l2_model_get_support_videoformat(int index)
 {
 	if(index <0 ||index >=V4L2_MODEL_VIDEOFORMAT_NUM)
@@ -466,7 +429,6 @@ static bool hws_any_queue_busy(struct hws_video *videodev)
 static int vidioc_s_fmt_vid_cap(struct file *file, void *priv,struct v4l2_format *f)
 {
 	struct hws_video *videodev = video_drvdata(file);
-	int nVideoFmtIndex;
 	int err;
 	unsigned long flags;
 	struct hws_pcie_dev *pdx = videodev->dev;
@@ -475,19 +437,15 @@ static int vidioc_s_fmt_vid_cap(struct file *file, void *priv,struct v4l2_format
     if (err)
         return err;
 
-	nVideoFmtIndex = v4l2_get_suport_VideoFormatIndex(f);	/* -1 for a native-only size */
-
 	if ((f->fmt.pix.width != videodev->current_out_width ||
 	     f->fmt.pix.height != videodev->curren_out_height ||
 	     f->fmt.pix.pixelformat != videodev->pixfmt) && hws_any_queue_busy(videodev))
 		return -EBUSY;
 
 	spin_lock_irqsave(&pdx->videoslock[videodev->index], flags);
-	videodev->current_out_size_index = nVideoFmtIndex;
 	videodev->pixfmt     = f->fmt.pix.pixelformat;
 	videodev->current_out_width      = f->fmt.pix.width;
 	videodev->curren_out_height     = f->fmt.pix.height;
-	//printk("%s<<  current_out_size_index =%d current_out_width=%d.curren_out_height=%d.\n",__func__,videodev->current_out_size_index,videodev->current_out_width ,videodev->curren_out_height );
 	spin_unlock_irqrestore(&pdx->videoslock[videodev->index], flags);
 	return 0;
 }
@@ -691,7 +649,6 @@ static int hws_open(struct file *file)
             spin_lock_irqsave(&pdx->videoslock[videodev->index], flags);
             videodev->current_out_width = nw;
             videodev->curren_out_height = nh;
-            videodev->current_out_size_index = v4l2_get_suport_VideoFormatIndex_wh(nw, nh);
             spin_unlock_irqrestore(&pdx->videoslock[videodev->index], flags);
         }
     }
@@ -2881,10 +2838,8 @@ static  void V2560X1440_To_FHD_Scaler(BYTE *pSrc,BYTE *pOut,int in_w,int in_h,in
 	BYTE*pDestBuf;
 	DWORD *pSrcData;
 	DWORD *pDestData;
-	int    out_w_size;
 	BYTE*pSrcTmp;
 	BYTE*pDestTmp;
-	out_w_size = out_w*2;
 	pDestData = (DWORD *) pOut;
 	pSrcData = (DWORD *) pSrc;
 	pSrcBuf = pSrc;
@@ -3921,11 +3876,8 @@ static void hws_get_video_param(struct hws_pcie_dev *dev,int index)
 	width= dev->m_pVCAPStatus[index][0].dwWidth;
 	height=dev->m_pVCAPStatus[index][0].dwHeight;
 	dev->video[index].current_out_pixfmt =0;
-	dev->video[index].current_out_size_index = 0;
 	dev->video[index].current_out_width = width;
 	dev->video[index].curren_out_height = height;
-	dev->video[index].current_out_framerate = 60;
-	dev->video[index].Interlaced = 0;
 	//printk( "%s(%dx%d):  \n", __func__, width,height);
 
 }
@@ -4004,7 +3956,6 @@ int hws_video_register(struct hws_pcie_dev *dev)
 		dev->video[i].index = i;
 		dev->video[i].dev = dev;
 		dev->video[i].fileindex =0;
-		dev->video[i].std = V4L2_STD_NTSC_M;
 		dev->video[i].pixfmt = V4L2_PIX_FMT_YUYV;
 		//-------------------
 		//-------------------
@@ -4016,13 +3967,11 @@ int hws_video_register(struct hws_pcie_dev *dev)
 		vdev->release = video_device_release_empty;
 		vdev->vfl_dir = VFL_DIR_RX;
 		vdev->ioctl_ops = &hws_ioctl_fops;
-		mutex_init(&(dev->video[i].video_lock));
 		spin_lock_init(&dev->video[i].consumers_lock);
 		mutex_init(&dev->video[i].ioctl_lock);
 		INIT_LIST_HEAD(&dev->video[i].consumers);
 		atomic_set(&dev->video[i].engine_users, 0);
 
-		spin_lock_init(&dev->video[i].slock);
 		//printk("v4l2_device_register INT3[%d]\n",i);
 		//printk("v4l2_device_register INT2[%d]\n",i);
 		video_set_drvdata(vdev, &(dev->video[i]));
@@ -4056,25 +4005,6 @@ int hws_video_register(struct hws_pcie_dev *dev)
 	return err;
 }
 
-/* HDMI 0x39[3:0] - CS_DATA[27:24] 0 for reserved values*/
-static const int cs_data_fs[] = {
-	44100,
-	0,
-	48000,
-	32000,
-	0,
-	0,
-	0,
-	0,
-	88200,
-	768000,
-	96000,
-	0,
-	176000,
-	0,
-	192000,
-	0,
-};
 #if 1
 static struct snd_pcm_hardware audio_pcm_hardware = {
 	/*
@@ -4229,10 +4159,7 @@ static snd_pcm_uframes_t hws_pcie_audio_pointer(struct snd_pcm_substream *substr
 	struct hws_audio *drv = snd_pcm_substream_chip(substream);
 	//struct snd_pcm_runtime *runtime = substream->runtime;
 	snd_pcm_uframes_t pos;
-	int dwAudioCh;
 	unsigned long flags;
-	dwAudioCh = drv->index;
-	//printk(KERN_INFO "%s() index:%x\n",__func__,dwAudioCh);
 	spin_lock_irqsave(&drv->ring_lock,flags);  //spin_lock
 	pos = drv->ring_wpos_byframes;
 	spin_unlock_irqrestore(&drv->ring_lock,flags); //spin_unlock
@@ -5533,10 +5460,6 @@ static void SetDMAAddress(struct hws_pcie_dev *pdx)
 	//u32 RDAvalon = 0;
 	//u32 m_AddreeSpace = 0;
 	int i = 0;
-	u32 m_ReadTmp;
-	u32 m_ReadTmp2;
-	//u32 m_ReadTmp3;
-	//u32 m_ReadTmp4;
 	DWORD halfframeLength=0;
 	//DWORD m_Valude;
 	PhyAddr_A_High = 0;
@@ -5569,9 +5492,9 @@ static void SetDMAAddress(struct hws_pcie_dev *pdx)
 			WRITE_REGISTER_ULONG(pdx,(PCI_ADDR_TABLE_BASE + cnt),PhyAddr_A_High);
 			WRITE_REGISTER_ULONG(pdx,(PCI_ADDR_TABLE_BASE + cnt+PCIE_BARADDROFSIZE),PhyAddr_A_Low);  //Entry 0
 			//----------------------------------------
-			m_ReadTmp =  READ_REGISTER_ULONG(pdx,(PCI_ADDR_TABLE_BASE + cnt));
-			m_ReadTmp2 = READ_REGISTER_ULONG(pdx,(PCI_ADDR_TABLE_BASE + cnt+PCIE_BARADDROFSIZE));
-			//printk("[MV]1-PCI_Addr[%d] :PhyAddr_A_Low  %X=%X  PhyAddr_A_High %X=%X\n", i, PhyAddr_A_Low, m_ReadTmp2, PhyAddr_A_High, m_ReadTmp);
+			/* read back to flush the posted writes; the values aren't used */
+			READ_REGISTER_ULONG(pdx,(PCI_ADDR_TABLE_BASE + cnt));
+			READ_REGISTER_ULONG(pdx,(PCI_ADDR_TABLE_BASE + cnt+PCIE_BARADDROFSIZE));
 
 
 			//--------------------------
@@ -5580,9 +5503,8 @@ static void SetDMAAddress(struct hws_pcie_dev *pdx)
 			WRITE_REGISTER_ULONG(pdx,( CBVS_IN_BUF_BASE2 + (i*PCIE_BARADDROFSIZE)),halfframeLength); //Buffer 1 address
 
 
-			m_ReadTmp =  READ_REGISTER_ULONG(pdx,(  CBVS_IN_BUF_BASE + (i*PCIE_BARADDROFSIZE)));
-			m_ReadTmp2 = READ_REGISTER_ULONG(pdx,(  CBVS_IN_BUF_BASE2 + (i*PCIE_BARADDROFSIZE)));
-			//printk("[MV]1-Avalone [X64]BUF[%d]:BUF1=%X  BUF2=%X\n", i,  m_ReadTmp,  m_ReadTmp2);
+			READ_REGISTER_ULONG(pdx,(  CBVS_IN_BUF_BASE + (i*PCIE_BARADDROFSIZE)));
+			READ_REGISTER_ULONG(pdx,(  CBVS_IN_BUF_BASE2 + (i*PCIE_BARADDROFSIZE)));
 
 			//---------------------------
 
@@ -5598,8 +5520,7 @@ static void SetDMAAddress(struct hws_pcie_dev *pdx)
 			//printk("[X1]Audio:PCI_Addr =%X\n",PCI_Addr);
 			//printk("[X1]Audio:-------- - LOW=%X  HIGH =%X\n",pdx->m_dwAudioBuffer[i],pdx->m_dwAudioBufferHigh[i]);
 			WRITE_REGISTER_ULONG(pdx,(CBVS_IN_BUF_BASE + ((8+i)*PCIE_BARADDROFSIZE)), ((i+1)*PCIEBAR_AXI_BASE+PCI_Addr)); //Buffer 1 address
-			m_ReadTmp = READ_REGISTER_ULONG(pdx,(CBVS_IN_BUF_BASE + ((8+i)*PCIE_BARADDROFSIZE)));
-			//printk("[X1]Audio:[%d] :--------BUF1: %X=%X\n",i,(PCIEBAR_AXI_BASE+PCI_Addr),m_ReadTmp);
+			READ_REGISTER_ULONG(pdx,(CBVS_IN_BUF_BASE + ((8+i)*PCIE_BARADDROFSIZE)));
 		}
 		#endif
 	}

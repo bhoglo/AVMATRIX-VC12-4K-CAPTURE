@@ -161,12 +161,6 @@ typedef unsigned char BOOL;
 #define MAX_VIDEO_HW_W 4096
 #define MAX_VIDEO_HW_H 2160
 
-struct TMemParam
-{
-	DWORD   dwIndex;
-	DWORD   dwType;
-	DWORD   dwStatus;
-};
 typedef struct tagDATA_BUFFER_MSG
 {
 	DWORD dwHandle;
@@ -255,19 +249,6 @@ typedef struct tagVIDEO_INFO
 }VIDEO_INFO,*PVIDEO_INFO;
 
 
-#define DVRS_HW_IOC_MAGIC	'd'
-enum DVRS_HW_TYPES {
-	IOCTL_DVRS_MAP_DATA_BUFFER,
-	IOCTL_DVRS_MAP_START_DMA,
-	IOCTL_DVRS_MAP_STOP_DMA,
-	IOCTL_DVRS_MAP_GET_CAPTURE,
-	IOCTL_DVRS_MAP_SET_FORMATE
-};
-#define DVRS_HW_IOCDATABUFFER		_IOWR(DVRS_HW_IOC_MAGIC, IOCTL_DVRS_MAP_DATA_BUFFER, struct TMemParam)
-#define DVRS_HW_IOCSTART_DMA	_IOWR(DVRS_HW_IOC_MAGIC, IOCTL_DVRS_MAP_START_DMA,		 struct TMemParam)
-#define DVRS_HW_IOCSTOP_DMA	   _IOWR(DVRS_HW_IOC_MAGIC, IOCTL_DVRS_MAP_STOP_DMA,		 struct TMemParam)
-#define DVRS_HW_IOCGET_CAPUTURE  _IOWR(DVRS_HW_IOC_MAGIC, IOCTL_DVRS_MAP_GET_CAPTURE,	 struct TMemParam)
-#define DVRS_HW_IOCSET_FORMATE  _IOWR(DVRS_HW_IOC_MAGIC, IOCTL_DVRS_MAP_SET_FORMATE,	 struct TMemParam)
 
 //--------------------
 
@@ -349,18 +330,14 @@ struct hws_video{
 	struct v4l2_device		v4l2_dev;
 	struct video_device		vdev;
 	int                     fileindex;
-	struct mutex			video_lock;
 	/* B1: multi-consumer */
 	spinlock_t			consumers_lock;
 	struct mutex			ioctl_lock;	/* non-buffer ioctls (shared format/state) */
 	struct mutex			engine_lock;	/* StartVideoCapture/StopVideoCapture */
 	struct list_head		consumers;
 	atomic_t			engine_users;
-	spinlock_t				slock;
-	v4l2_std_id				std;  //V4L2_STD_NTSC_M
 	u32						pixfmt; //V4L2_PIX_FMT_YUYV(fourcc)
 	int						index;
-	int						Interlaced;
 	/*
 	 * Frame assembly. The IRQ thread copies each half of a frame straight
 	 * into one buffer per consumer (frame_bufs, linked through
@@ -405,9 +382,7 @@ struct hws_video{
 	//------------------------
 	int current_out_width;
 	int curren_out_height;
-	int current_out_framerate;
 	int current_out_pixfmt;
-	int current_out_size_index;
 };
 	
 struct hws_audio{
@@ -511,14 +486,11 @@ struct hws_pcie_dev {
 	
 	struct task_struct *mMain_tsk; 
 	int m_curr_No_Video[MAX_VID_CHANNELS];
-	int m_VideoInHWmode[MAX_VID_CHANNELS];
 	//------------------
 	dma_addr_t   		m_pbyAudio_phys[MAX_VID_CHANNELS] ;
 	uint8_t     *m_pbyAudioBuffer[MAX_VID_CHANNELS];
 	uint8_t		*m_pbyUserAudioBuffer[MAX_VID_CHANNELS];
-	uint8_t     *m_pAudioData[MAX_VID_CHANNELS];
 	uint8_t     *m_pbyAudioBuffer_area[MAX_VID_CHANNELS];
-	uint8_t     *m_pAudioData_area[MAX_VID_CHANNELS];
 	uint8_t		m_bBufferAllocate;
 	u32		m_dwAudioBuffer[MAX_VID_CHANNELS];
 	u32		m_dwAudioBufferHigh[MAX_VID_CHANNELS];
