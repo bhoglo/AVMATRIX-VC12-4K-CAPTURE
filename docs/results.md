@@ -565,3 +565,7 @@ So with a source rate the card doesn't support, the stream keeps its 48 kHz pace
 ### Stale audio at each start (6.20)
 
 The 32 kHz capture began with 1,024 frames that exactly matched the end of the 48 kHz capture before it. With 48 kHz only, alternating a 1 kHz and a 500 Hz tone, one capture of each, three pairs: every capture started with one or two packets (21–43 ms) of the previous capture's tone, even right after a module reload. Clearing the driver's audio ring before the enable changed nothing, so the card sends them. Driver `7784170` (DKMS `1.0.0.230324.6.7`, srcversion `76CCE9310DB87869487B36C`) drops the first two packets after each audio start: in five pairs, all 10 captures started with their own tone from frame 0.
+
+### IOMMU modes
+
+**`iommu.strict=1`** (one boot, IOMMU type `DMA`), driver `7784170` (DKMS `1.0.0.230324.6.7`), the PC's GPU as the source. `tests/zctest.sh` at 1920×1080p240 and again at 3840×2160p60: every case delivered at the full rate with 0 sequence gaps or repeats, zero-copy 0 failed and 0 late writes, and **0 buffers outside the window, including the 100 start/stop cycles** that counted 174 under the default `DMA-FQ`. 0 `IO_PAGE_FAULT`, stray writes or warnings. This supports the inferred cause: with lazy (flush-queue) unmapping, freed addresses come back late, so quick reallocations land below the 0xE0000000 window and use the copy path. Under strict unmapping they are reused at once. The copy-path fallback is the designed behaviour, so nothing needs changing.
