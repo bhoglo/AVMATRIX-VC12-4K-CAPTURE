@@ -8,7 +8,6 @@
 #include <media/v4l2-device.h>
 #include <media/videobuf2-dma-contig.h>
 #include <media/videobuf2-vmalloc.h>
-#include <media/videobuf2-dma-contig.h>
 #include "hws.h"
 #include "hws_reg.h"
 #include <sound/core.h>
@@ -17,7 +16,6 @@
 #include <sound/rawmidi.h>
 #include <sound/initval.h>
 #include <media/v4l2-ctrls.h>
-#include <media/v4l2-device.h>
 
 static void hws_adapters_init(struct hws_pcie_dev *dev);
 static void hws_get_video_param(struct hws_pcie_dev *dev,int index);
