@@ -10,6 +10,42 @@ Ben Hoff wrote it and maintains it (MAINTAINERS: "AVMATRIX HWS CAPTURE DRIVER", 
 
 The kernel clone used for this work is `~/git/linux`, branch `hws-vc12-4k`, sparse checkout of `drivers/media/pci/hws/`, `MAINTAINERS` and `Documentation/admin-guide/media/`. Patches to linux-media are based on the media tree's `next` branch (`https://git.linuxtv.org/media.git`). Fetch that before writing patches.
 
+## Work already under way (checked 2026-10-20)
+
+`master` isn't the whole story. The media patchwork (`patchwork.linuxtv.org`, search "hws") and Ben Hoff's own repository (`github.com/benhoff/hws`) show:
+
+- **Accepted, not yet in Linus's tree** (they come in a later merge window):
+  - "media: hws: fix device info register field masks" (2026-08-01). It reads the version from bits 15:8 and the sub-version from bits 23:16, as this driver does. Item 3 below is already fixed.
+  - "media: hws: report measured colorimetry" (2026-08-07);
+  - "media: pci: hws: only init channels the device actually has" (2026-08-19, Linkai Gong);
+  - "media: hws: Wait for IRQ handler before returning buffers" (2026-08-08, Hao-Qun Huang).
+- **HDMI audio, under review.** "media: hws: add HDMI audio capture support", v3, 5 patches, 2026-06-29. Patch 5 adds `hws_audio.c` (1,183 lines), an ALSA PCM capture device at 48 kHz stereo with 4096-byte packets. The other four rework the video DMA around the remap windows and a shared scratch arena. Patchwork state: changes requested. On 2026-07-27 Ben wrote that a v4 was drafted locally. Hans Verkuil asked about it on 2026-09-08. No v4 had been posted by 2026-10-20.
+
+  Its registers match this card: ring address at register 24 + ch, enable in register 3, interrupt bit 8 + ch, toggle at 40 + ch. Its `snd_pcm_hardware.info` has no `SNDRV_PCM_INFO_BATCH`, which this driver needed to stop PipeWire's crackle (stage 1 and PR #26 upstream).
+- **Cleanup series, under review.** "remove debug controls and lifecycle tracing", "quiesce interrupts without disabling shared IRQ", "serialize video quiesce with queue state" (3 patches, 2026-09-15, changes requested).
+- **A VC12-4K port, waiting for hardware.** Branch `feat/1chuhd-video-only-port` (5 commits, 2026-04-07) in `benhoff/hws`:
+  - adds 8888:8581, 1F33:8581, 8888:85A1 and 8888:8591 as the "1CHUHD" family;
+  - selects one channel;
+  - raises the UHD geometry limits;
+  - programs the four DMA slots;
+  - assembles each frame on the CPU from scratch buffers.
+
+  Its README says it builds but "has not been validated on real hardware", and it asks a hardware owner to run `collect_1chuhd_logs.sh`. The branch is video only, like this file's plan, and is 10 commits behind his `master`.
+
+Its open questions, and what this driver's work has found:
+
+| Question in the branch | Answer from this card |
+|---|---|
+| Toggle 1 fills slices 0 and 1, toggle 0 fills 2 and 3? | Yes. When the toggle reads 1, quarters 0 and 1 (the top half) are done; at 0 the frame is complete ([hws_video.c](../src/hws_video.c), `hws_zc_*`). |
+| Are the slices contiguous chunks of one progressive YUYV frame? | Yes: quarters 0–2 are each (w·h·2 / 8192) × 2048 bytes, and quarter 3 is the rest, rounded up to 2 KiB. Pointing the four slots at consecutive parts of one buffer gives a correct frame with no CPU assembly (stage 4.4, 8 hours at 4K60). |
+| Does interlaced input need different reconstruction? | Not tested on this card. Register 90 gives the field size (Windows accepts 1920 × 540, 720 × 288 and 720 × 240 fields), and register 5 bit 8 + ch the interlace flag (see [REGISTERS.md](REGISTERS.md)). |
+| Is MMAP enough, or is DMABUF needed? | OBS captures with MMAP, and this driver's zero-copy path was tested with it. |
+| Does `support_yv12` mean a missing format? | Register 88 bits 31:28 read 0 on this card: YUYV only. |
+
+One more difference from the branch's test plan: a 4096 × 2160 source arrives as 3840 × 2160, because the card scales it, so a 4096-wide capture mode never occurs.
+
+So contributing here means testing and finishing Ben's branch, and reviewing his audio series on this card. It doesn't mean writing the port from scratch. The rest of this file is the comparison against `master` and still describes what the port needs.
+
 ## Verdict
 
 The card fits the `hws` driver. Both drivers come from the same vendor code base:
@@ -68,7 +104,7 @@ Mainline writes the buffer address to register 26 + ch before every frame (`hws_
 
 ### 3. The version register
 
-Mainline reads register 88 as version = bits 7:0, sub-version = bits 15:8. On this card, that gives version 255 and sub-version 122. The Windows driver and this driver read the version from bits 15:8 (122) and the sub-version from bits 23:16. The version matters because mainline picks `hw_ver` and register 9's value from it. The profile needs the right layout for 8581.
+Fixed by the accepted "fix device info register field masks" patch (see above). On `master`, mainline still reads register 88 as version = bits 7:0, sub-version = bits 15:8. On this card, that gives version 255 and sub-version 122. The Windows driver and this driver read the version from bits 15:8 (122) and the sub-version from bits 23:16. The version matters because mainline picks `hw_ver` and register 9's value from it. The profile needs the right layout for 8581.
 
 ### 4. Register 9 and the size limits
 
@@ -99,7 +135,7 @@ Register 110 gives whole frames per second only. To tell 59.94 from 60 Hz, we me
 
 ### 6. Audio
 
-Mainline `hws` has no audio. It doesn't depend on any ALSA module. The VC12-4K's HDMI audio needs:
+Mainline `master` has no audio, but Ben Hoff's audio series (v3, see above) adds it with the same registers. The VC12-4K's HDMI audio needs:
 - the audio ring addresses (registers 24 + i);
 - the audio enable (register 3);
 - the audio interrupt (register 1, bit 8, with the toggle in register 40);
@@ -110,7 +146,7 @@ The PCM has to work the way our fixed driver does:
 - drop the two stale packets after each enable;
 - deliver silence while the source sends none.
 
-This is new code for the whole driver, not only for this card. Whether the multi-channel cards carry audio the same way is unknown. It belongs in a separate patch series after video works.
+Ben's series covers the multi-channel cards with the same register scheme. For this card, what's left is testing it here, and the BATCH flag and the stale-packet drop if it lacks them.
 
 ## What doesn't carry over
 
@@ -125,7 +161,7 @@ The knowledge carries over: the register notes, the quarter rule, the register 9
 
 ## A possible patch series
 
-The order in which the patches could go to linux-media, each small enough to review on its own:
+Written before Ben's VC12-4K branch turned up. His branch already covers parts 1–4 in its own way. The list stays as a check of what a finished port needs:
 
 1. `media: hws: add per-board configuration`: use the existing `driver_data` slot for channel count, slots per frame, size limits, doorbell and version layout. No behaviour change for existing boards.
 2. `media: hws: support frames split across several DMA slots`.
