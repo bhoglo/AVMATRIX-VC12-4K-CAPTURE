@@ -3863,6 +3863,16 @@ static int hws_render_staged(struct hws_pcie_dev *pdx, int ch, BYTE *dest, int o
  * the card did not refresh, or a bottom half without its top half, loses the
  * frame; held buffers then wait for the next one.
  */
+/*
+ * A half copied from the DMA buffers is safe only until the card starts the
+ * next frame's run into that quarter pair, about one half-frame interval
+ * after the half-done interrupt. A copy that ends later may be torn.
+ */
+static bool hws_copy_late(struct hws_video *v, struct hwsvideo_buffer *zf, u64 ts)
+{
+	return !zf && v->zc_gap_prev && ktime_get_ns() - ts > v->zc_gap_prev;
+}
+
 static void hws_video_half(struct hws_pcie_dev *pdx, int ch, int half, u64 ts)
 {
 	struct hws_video *v = &pdx->video[ch];
@@ -3883,6 +3893,7 @@ static void hws_video_half(struct hws_pcie_dev *pdx, int ch, int half, u64 ts)
 	u64 gap, margin;
 	u32 *mark;
 	int i, off, len2, len3;
+	bool late = false;
 
 	if (w <= 0 || h <= 0 || w > MAX_VIDEO_HW_W || h > MAX_VIDEO_HW_H || !vi->dwisRuning)
 		return;
@@ -3966,6 +3977,7 @@ static void hws_video_half(struct hws_pcie_dev *pdx, int ch, int half, u64 ts)
 			memcpy(vi->m_pVideoStaging + v->frame_len[0], src1, v->frame_len[1]);
 		}
 		v->top_done = true;
+		v->frame_late = hws_copy_late(v, zf, ts);
 		goto out;
 	}
 
@@ -3999,9 +4011,11 @@ static void hws_video_half(struct hws_pcie_dev *pdx, int ch, int half, u64 ts)
 			memcpy((BYTE *)buf->mem + off, src0, len2);
 			memcpy((BYTE *)buf->mem + off + len2, src1, len3);
 		}
+		late = hws_copy_late(v, zf, ts);
 	} else if (!list_empty(&v->frame_bufs)) {
 		memcpy(vi->m_pVideoStaging + off, src0, len2);
 		memcpy(vi->m_pVideoStaging + off + len2, src1, len3);
+		late = hws_copy_late(v, zf, ts);	/* the scaler below reads only the staging copy */
 		list_for_each_entry(buf, &v->frame_bufs, queue) {
 			if (first) {
 				memcpy(buf->mem, first, out_size);
@@ -4012,6 +4026,10 @@ static void hws_video_half(struct hws_pcie_dev *pdx, int ch, int half, u64 ts)
 				first = buf->mem;
 			}
 		}
+	}
+	if (state == VB2_BUF_STATE_DONE && (v->frame_late || late)) {
+		state = VB2_BUF_STATE_ERROR;	/* the card may have overwritten a half mid-copy */
+		v->late_copies++;
 	}
 	if (state == VB2_BUF_STATE_DONE)
 		v->zc_stable++;
@@ -6274,6 +6292,7 @@ static int hws_dbg_status_show(struct seq_file *m, void *unused)
 		   READ_ONCE(pdx->irq_total), READ_ONCE(pdx->irq_video),
 		   READ_ONCE(pdx->irq_audio), READ_ONCE(pdx->irq_fifo_full),
 		   READ_ONCE(pdx->irq_unknown), READ_ONCE(pdx->irq_unknown_bits));
+	seq_printf(m, "copy path: frames failed because a copy ended late: %u\n", READ_ONCE(v->late_copies));
 	seq_printf(m, "zero-copy: %s; frames %u, failed %u, late writes %u, buffers outside the window %u%s\n",
 		   hws_zc_unavailable(pdx) ?: (zero_copy ? "on" : "off"),
 		   v->zc_frames, v->zc_errors, v->zc_late, v->zc_outside,
