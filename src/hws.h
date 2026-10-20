@@ -532,8 +532,7 @@ struct hws_pcie_dev {
 	u64       m_RateUpdatedNs[MAX_VID_CHANNELS];	/* when m_FrameIntervalNs was last written */
 	int       m_NeedReinit;	/* set by hws_request_reinit(), handled by the status thread */
 	bool      zc_iommu;	/* the IOMMU translates for the card: zero-copy buffers possible (stage 4.4) */
-	uint8_t   m_ResumeVideo[MAX_VID_CHANNELS];	/* capture state saved across system sleep */
-	uint8_t   m_ResumeAudio[MAX_VID_CHANNELS];
+	uint8_t   m_ResumeVideo[MAX_VID_CHANNELS];	/* video capture state saved across system sleep; ALSA restarts audio */
 	uint8_t	  m_dwAudioField[MAX_VID_CHANNELS];
 	uint8_t   m_nAudioBusy[MAX_VID_CHANNELS];
 	uint8_t   m_nAudioBufferIndex[MAX_VID_CHANNELS];

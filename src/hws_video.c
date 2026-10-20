@@ -1832,6 +1832,7 @@ void audio_data_process(struct work_struct *p_work)
 	int nIndex;
 	int i;
 	int delived = 0;
+	bool deliver;
 	//unsigned int frames;
 	BYTE *bBuf = NULL;
 	//int copysize =0;
@@ -1843,6 +1844,14 @@ void audio_data_process(struct work_struct *p_work)
 	dwAudioCh = drv->index;
 	//printk("audio_data_process %d\n",dwAudioCh);
 	spin_lock_irqsave(&pdx->audiolock[dwAudioCh], flags);
+	/*
+	 * Deliver only into a running stream's buffer. A packet queued just
+	 * before trigger STOP can run after hw_free has dropped the buffer, and
+	 * after close the runtime is gone; such packets are dropped.
+	 */
+	deliver = READ_ONCE(drv->running) && drv->ring_size_byframes &&
+			  drv->substream && drv->substream->runtime &&
+			  drv->substream->runtime->dma_area;
 	/*
 	 * queue_work() does nothing if the work is already pending, so several
 	 * IRQs can map to one run. Drain every filled packet here; delivering only
@@ -1881,8 +1890,10 @@ void audio_data_process(struct work_struct *p_work)
 		break;
 	{
 		//--- send data -------------
-		hws_audio_card_packet(drv);
-		delived = _deliver_samples(drv,bBuf, aud_len);
+		if (deliver) {
+			hws_audio_card_packet(drv);
+			delived = _deliver_samples(drv,bBuf, aud_len);
+		}
 		#if 0
 		avail = aud_len - delived;
 		if(avail)
@@ -4209,7 +4220,6 @@ static struct snd_pcm_hardware audio_pcm_hardware = {
 	SNDRV_PCM_INFO_INTERLEAVED |
 	SNDRV_PCM_INFO_BLOCK_TRANSFER |
 	SNDRV_PCM_INFO_BATCH |
-	SNDRV_PCM_INFO_RESUME |
 	SNDRV_PCM_INFO_MMAP_VALID),
 	.formats 			=	SNDRV_PCM_FMTBIT_S16_LE,
 	.rates 				=   SNDRV_PCM_RATE_48000,
@@ -4259,8 +4269,13 @@ int hws_pcie_audio_open(struct snd_pcm_substream *substream)
 
 int hws_pcie_audio_close(struct snd_pcm_substream *substream)
 {
-	//	struct hws_audio *chip = snd_pcm_substream_chip(substream);
-	//printk(KERN_INFO "%s() \n",__func__);
+	struct hws_audio *drv = snd_pcm_substream_chip(substream);
+	unsigned long flags;
+
+	cancel_work_sync(&drv->audiowork);
+	spin_lock_irqsave(&drv->dev->audiolock[drv->index], flags);
+	drv->substream = NULL;	/* the audio work checks it under audiolock */
+	spin_unlock_irqrestore(&drv->dev->audiolock[drv->index], flags);
 	return 0;
 }
 int hws_pcie_audio_hw_params(struct snd_pcm_substream *substream, struct snd_pcm_hw_params *hw_params)
@@ -4274,7 +4289,8 @@ int hws_pcie_audio_hw_free(struct snd_pcm_substream *substream)
 	struct hws_audio *drv = snd_pcm_substream_chip(substream);
 
 	//printk(KERN_INFO "%s() \n",__func__);
-	cancel_delayed_work_sync(&drv->silence_work);	/* it writes the buffer */
+	cancel_delayed_work_sync(&drv->silence_work);	/* both write the buffer */
+	cancel_work_sync(&drv->audiowork);
 	return snd_pcm_lib_free_pages(substream);
 }
 
@@ -4321,6 +4337,7 @@ int hws_pcie_audio_trigger(struct snd_pcm_substream *substream, int cmd)
 			queue_delayed_work(dev->auwq, &chip->silence_work, 0);
 			StartAudioCapture(dev,chip->index);
 			break;
+		case SNDRV_PCM_TRIGGER_SUSPEND:	/* no RESUME: the app prepares and starts again */
 		case SNDRV_PCM_TRIGGER_STOP:
 			//stop dma
 			//HWS_PCIE_WRITE(HWS_INT_BASE, HWS_DMA_MASK(chip->index), 0x000000000);
@@ -6492,7 +6509,6 @@ static int hws_suspend(struct device *d)
 
 	for (i = 0; i < pdx->m_nCurreMaxVideoChl; i++) {
 		pdx->m_ResumeVideo[i] = pdx->m_bVCapStarted[i];
-		pdx->m_ResumeAudio[i] = pdx->m_bACapStarted[i];
 		if (pdx->m_bVCapStarted[i])
 			EnableVideoCapture(pdx, i, 0);
 		if (pdx->m_bACapStarted[i])
@@ -6522,10 +6538,6 @@ static int hws_resume(struct device *d)
 		if (pdx->m_ResumeVideo[i]) {
 			pdx->m_bVCapStarted[i] = 0;
 			StartVideoCapture(pdx, i);
-		}
-		if (pdx->m_ResumeAudio[i]) {
-			pdx->m_bACapStarted[i] = 0;
-			StartAudioCapture(pdx, i);
 		}
 	}
 	dev_info(d, "resumed, card re-initialised\n");
