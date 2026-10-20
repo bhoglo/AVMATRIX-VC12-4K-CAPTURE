@@ -678,6 +678,8 @@ The third loss came with nothing capturing, so capture isn't required; it follow
 
 **Control run, capture driver unloaded (2026-10-20 08:32–08:35).** Card cabled to HDMI-A-2 and powered, `HwsUHDX1Capture` removed with `rmmod` (no `/dev/video0`), OBS closed. 20 changes alternating 1920×1080p60 and 3840×2160p60, one every 10 s: every mode took, and the kernel logged no `device lost`, `REG_WAIT` or ring timeout. The driver then loaded normally and captured 120 of 120 frames. This points at something the driver does (the card's HDMI receiver with the driver loaded is the remaining difference), but it isn't proof: the second loss came only after about 17 changes at 6 s intervals, and 20 clean changes is a small sample.
 
+**Driver loaded, nothing capturing (2026-10-20 08:38–08:41).** DKMS 6.9 (srcversion `0CD4DA1B1E0DF0597BFDFE4`) loaded, `/dev/video0` not open, the same 20 changes 10 s apart: no GPU error; the driver's status file followed each change (1920×1080, 3840×2160). So the status thread's polling of an idle card doesn't trigger it either, at least at this pace. The third loss (nothing capturing, but 3 s after a driver load) and the second (capturing, 6 s apart) remain.
+
 A run with a driver from before `bf3ede3` (DKMS 6.3), making GPU mode changes while capturing, would narrow it further; it risks another lockup, so it waits for the operator. Until then no mode changes are made on the GPU output feeding the card at all; `tests/modematrix.sh` refuses to run without `HWS_ALLOW_GPU_MODESET=1`.
 
 ### Not done
