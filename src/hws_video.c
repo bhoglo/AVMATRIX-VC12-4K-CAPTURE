@@ -5794,13 +5794,27 @@ static void SetDMAAddress(struct hws_pcie_dev *pdx)
 //-----------------------------------
 static int ChangeVideoSize(struct hws_pcie_dev *pdx,int ch,int w,int h,int interlace)
 {
+	struct hws_video *v = &pdx->video[ch];
+	bool restart = false;
 	int j;
 	int halfframeLength[4];
 	unsigned long flags;
 	if(ch != 0) return -1;
-	hws_zc_stop(pdx, false);	/* zero-copy buffers are sized for the old input */
+	/*
+	 * Zero-copy buffers are sized for the old input. The card may apply
+	 * the new lengths and register 9 to a run already going into one, so
+	 * stop the engine first and hand the buffers back while it is off.
+	 */
+	if (pdx->m_bVCapStarted[ch] &&
+	    (v->zc_prog[0] || v->zc_prog[1] || v->zc_cur || !list_empty(&v->zc_release))) {
+		hws_video_quiesce(pdx, ch);
+		restart = true;
+	}
+	hws_zc_stop(pdx, restart);
 	if(SetVideoFormteSize(pdx,ch,w,h) != 1)
 	{
+		if (restart)
+			StartVideoCapture(pdx, ch);
 		return -1;
 	}
 	spin_lock_irqsave(&pdx->videoslock[ch], flags);
@@ -5822,6 +5836,8 @@ static int ChangeVideoSize(struct hws_pcie_dev *pdx,int ch,int w,int h,int inter
 	WRITE_REGISTER_ULONG(pdx,(DWORD)(CBVS_IN_BUF_BASE2 + (3*PCIE_BARADDROFSIZE)), halfframeLength[3]); //Buffer 1 address
 	hws_set_dma_max(pdx);
 	hws_fill_canary(pdx);
+	if (restart)
+		StartVideoCapture(pdx, ch);	/* the frame in flight is lost */
 	return 0;
 }
 
@@ -5921,12 +5937,18 @@ static void CheckVideFmt (struct hws_pcie_dev *pdx)
 
 	}
 	#endif
-	/* the IRQ thread reads the geometry and quarter sizes this may change */
+	/*
+	 * The IRQ thread reads the geometry and quarter sizes this may change.
+	 * A size change may stop and restart the engine, so engine_lock comes
+	 * first, in the order hws_start_streaming_multi() takes them.
+	 */
+	mutex_lock(&pdx->video[i].engine_lock);
 	mutex_lock(&pdx->video[i].cap_lock);
 	pdx->m_curr_No_Video[i] = Get_Video_Status(pdx,i);
 	if((pdx->m_curr_No_Video[i] ==0x1)&&(pdx->m_bVCapStarted[i]==TRUE))
 		hws_deliver_no_video(pdx, i);
 	mutex_unlock(&pdx->video[i].cap_lock);
+	mutex_unlock(&pdx->video[i].engine_lock);
 	//-----------------
 
 	}
