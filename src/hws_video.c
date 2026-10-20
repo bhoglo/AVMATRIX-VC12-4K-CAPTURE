@@ -124,88 +124,6 @@ static const framegrabber_pixfmt_t support_pixfmts[] = {
 		.is_yuv   = true,
 		.pixfmt_out = YUYV,
 	},
-	#if 0
-	[FRAMEGRABBER_PIXFMT_UYVY]={ //UYVY
-	.name     = "4:2:2, packed, UYVY",
-	.fourcc   = V4L2_PIX_FMT_UYVY,
-	.depth    = 16,
-	.is_yuv   = true,
-	.pixfmt_out = UYVY,
-},
-[FRAMEGRABBER_PIXFMT_YVYU]={ //YVYU
-.name     = "4:2:2, packed, YVYU",
-.fourcc   = V4L2_PIX_FMT_YVYU,
-.depth    = 16,
-.is_yuv   = true,
-.pixfmt_out = YVYU,
-},
-
-[FRAMEGRABBER_PIXFMT_VYUY]={ //VYUY
-.name     = "4:2:2, packed, VYUY",
-.fourcc   = V4L2_PIX_FMT_VYUY,
-.depth    = 16,
-.is_yuv   = true,
-.pixfmt_out = VYUY,
-},
-
-[FRAMEGRABBER_PIXFMT_RGB565]={ //RGBP
-.name     = "RGB565 (LE)",
-.fourcc   = V4L2_PIX_FMT_RGB565, /* gggbbbbb rrrrrggg */
-.depth    = 16,
-.is_yuv   = false,
-.pixfmt_out = RGBP,
-},
-[FRAMEGRABBER_PIXFMT_RGB565X]={ //RGBR
-.name     = "RGB565 (BE)",
-.fourcc   = V4L2_PIX_FMT_RGB565X, /* rrrrrggg gggbbbbb */
-.depth    = 16,
-.is_yuv   = false,
-.pixfmt_out = RGBR,
-},
-[FRAMEGRABBER_PIXFMT_RGB555]={ //RGBO
-.name     = "RGB555 (LE)",
-.fourcc   = V4L2_PIX_FMT_RGB555, /* gggbbbbb arrrrrgg */
-.depth    = 16,
-.is_yuv   = false,
-.pixfmt_out = RGBO,
-},
-[FRAMEGRABBER_PIXFMT_RGB555X]={ //RGBQ
-.name     = "RGB555 (BE)",
-.fourcc   = V4L2_PIX_FMT_RGB555X, /* arrrrrgg gggbbbbb */
-.depth    = 16,
-.is_yuv   = false,
-.pixfmt_out = RGBQ,
-},
-[FRAMEGRABBER_PIXFMT_RGB24]={ //RGB3 index=8
-.name     = "RGB24 (LE)",
-.fourcc   = V4L2_PIX_FMT_RGB24, /* rgb */
-.depth    = 24,
-.is_yuv   = false,
-.pixfmt_out = RGB3,
-},
-
-[FRAMEGRABBER_PIXFMT_BGR24]={ //BGR3
-.name     = "RGB24 (BE)",
-.fourcc   = V4L2_PIX_FMT_BGR24, /* bgr */
-.depth    = 24,
-.is_yuv   = false,
-.pixfmt_out = BGR3,
-},
-[FRAMEGRABBER_PIXFMT_RGB32]={ //RGB4
-.name     = "RGB32 (LE)",
-.fourcc   = V4L2_PIX_FMT_RGB32, /* argb */
-.depth    = 32,
-.is_yuv   = false,
-.pixfmt_out = RGB4,
-},
-[FRAMEGRABBER_PIXFMT_BGR32]={ //BGR4
-.name     = "RGB32 (BE)",
-.fourcc   = V4L2_PIX_FMT_BGR32, /* bgra */
-.depth    = 32,
-.is_yuv   = false,
-.pixfmt_out = BGR4,
-},
-#endif
 };
 
 //-------------------------------------------
@@ -525,16 +443,6 @@ static int hws_vidioc_g_input(struct file *file, void *priv, unsigned int *i)
 	Index = *i;
 	//printk( "%s(%d)-index =%d\n", __func__,videodev->index,Index);
 
-	#if 0
-	if(Index <0 ||Index >=V4L2_MODEL_VIDEOFORMAT_NUM)
-	{
-	return   -EINVAL;
-}
-else
-{
-*i = Index;
-}
-#else
 if(Index >0)
 {
 	return   -EINVAL;
@@ -543,28 +451,11 @@ else
 {
 	*i = 0;
 }
-#endif
 return 0;
 }
 
 static int hws_vidioc_s_input(struct file *file, void *priv, unsigned int i)
 {
-	#if 0
-	struct hws_video *videodev = video_drvdata(file);
-
-	int Index;
-	v4l2_model_timing_t *p_SupportmodeTiming;
-	Index = i;
-	if(Index <0 ||Index >=V4L2_MODEL_VIDEOFORMAT_NUM)
-	{
-	return   -EINVAL;
-}
-p_SupportmodeTiming = v4l2_model_get_support_videoformat(Index);
-videodev->current_out_size_index = Index;
-videodev->current_out_width = p_SupportmodeTiming->frame_size.width;
-videodev->curren_out_height = p_SupportmodeTiming->frame_size.height;
-printk( "%s(%d)- %dx%d \n", __func__,i,videodev->current_out_width,videodev->curren_out_height);
-#endif
 //printk( "%s(%d)\n", __func__,i);
 return i ? -EINVAL : 0;
 }
@@ -769,28 +660,6 @@ static int hws_ctrls_init(struct hws_video *videodev)
 	return v4l2_ctrl_handler_setup(hdl);
 }
 
-#if 0
-static int hws_vidioc_streamon(struct file *file, void *priv, enum v4l2_buf_type i)
-{
-//struct hws_video *videodev = video_drvdata(file);
-//printk( "%s(ch-%d)\n", __func__,videodev->index);
-#if 0
-StartVideoCapture(videodev->dev,videodev->index);
-#endif
-return(vb2_ioctl_streamon(file,priv,i));
-
-}
-static int hws_vidioc_streamoff(struct file *file, void *priv, enum v4l2_buf_type i)
-{
-//struct hws_video *videodev = video_drvdata(file);
-//printk( "%s(ch-%d)\n", __func__,videodev->index);
-#if 0
-StopVideoCapture(videodev->dev,videodev->index);
-#endif
-return(vb2_ioctl_streamoff(file,priv,i));
-
-}
-#endif
 #define HWS_MAX_DECIMATE 4
 
 /* The input's time per frame: measured if possible, else the table's nominal rate. */
@@ -1612,7 +1481,6 @@ void audio_data_process(struct work_struct *p_work)
 	struct hws_pcie_dev *pdx = drv->dev;
 	int nIndex;
 	int i;
-	int delived = 0;
 	bool deliver;
 	//unsigned int frames;
 	BYTE *bBuf = NULL;
@@ -1673,15 +1541,8 @@ void audio_data_process(struct work_struct *p_work)
 		//--- send data -------------
 		if (deliver) {
 			hws_audio_card_packet(drv);
-			delived = _deliver_samples(drv,bBuf, aud_len);
+			_deliver_samples(drv,bBuf, aud_len);
 		}
-		#if 0
-		avail = aud_len - delived;
-		if(avail)
-		{
-		printk("Sample Rate is wrong  =%d \n",avail);
-	}
-	#endif
 	//----------------------------------------------
 	//spin_lock_irqsave(&pdx->audiolock[dwAudioCh], flags);
 	pdx->m_AudioInfo[dwAudioCh].pStatusInfo[nIndex].byLock = MEM_UNLOCK;
@@ -4005,7 +3866,6 @@ int hws_video_register(struct hws_pcie_dev *dev)
 	return err;
 }
 
-#if 1
 static struct snd_pcm_hardware audio_pcm_hardware = {
 	/*
 	 * BATCH: the pointer only moves when a whole DMA packet
@@ -4031,22 +3891,6 @@ static struct snd_pcm_hardware audio_pcm_hardware = {
 	.periods_min 		=	2,
 	.periods_max 		=	255,
 };
-#else
-static struct snd_pcm_hardware audio_pcm_hardware ={
-	.info =  (SNDRV_PCM_INFO_INTERLEAVED |SNDRV_PCM_INFO_BLOCK_TRANSFER ),
-	.formats = (SNDRV_PCM_FMTBIT_S16_LE),
-	.rates = SNDRV_PCM_RATE_KNOT | SNDRV_PCM_RATE_48000,
-	.rate_min = 48000,
-	.rate_max = 48000,
-	.channels_min = 2,
-	.channels_max =2,
-	.period_bytes_min = HWS_AUDIO_CELL_SIZE,
-	.period_bytes_max = HWS_AUDIO_CELL_SIZE,
-	.periods_min      = 4,
-	.periods_max      = 4,
-	.buffer_bytes_max = HWS_AUDIO_CELL_SIZE*4,
-};
-#endif
 int hws_pcie_audio_open(struct snd_pcm_substream *substream)
 {
 	struct hws_audio *drv = snd_pcm_substream_chip(substream);
@@ -4946,21 +4790,6 @@ static void StopAudioCapture(struct hws_pcie_dev *pdx,int index)
 	pdx->m_bAudioStop[index] = 1;
 	pdx->m_nAudioBufferIndex[index] =0;
 	pdx->m_AudioInfo[index].dwisRuning =0;
-	#if 0
-	while(1)
-	{
-	if(pdx->m_bAudioStop[index] ==0)
-	{
-	break;
-}
-inc++;
-if(inc >2000)
-{
-break;
-}
-msleep(10);
-}
-#endif
 EnableAudioCapture(pdx,index,0);
 }
 //-----------------------------
@@ -5098,46 +4927,6 @@ static void DpcForIsr_Audio0(unsigned long data)
 	SetAudioQuene(pdx,index);
 
 }
-#if 0
-static void DpcForIsr_Audio1(unsigned long data)
-{
-
-int index;
-struct hws_pcie_dev *pdx;
-//pdx = sys_dvrs_hw_pdx;
-pdx = (struct hws_pcie_dev *)data;
-//unsigned long *pdata = (unsigned long *)data;
-//curr_buf_index = *pdata;
-index =1;
-SetAudioQuene(pdx,index);
-
-}
-static void DpcForIsr_Audio2(unsigned long data)
-{
-
-int index;
-struct hws_pcie_dev *pdx;
-//pdx = sys_dvrs_hw_pdx;
-pdx = (struct hws_pcie_dev *)data;
-//unsigned long *pdata = (unsigned long *)data;
-//curr_buf_index = *pdata;
-index =2;
-SetAudioQuene(pdx,index);
-
-}
-static void DpcForIsr_Audio3(unsigned long data)
-{
-
-int index;
-struct hws_pcie_dev *pdx;
-//pdx = sys_dvrs_hw_pdx;
-pdx = (struct hws_pcie_dev *)data;
-//unsigned long *pdata = (unsigned long *)data;
-//curr_buf_index = *pdata;
-index =3;
-SetAudioQuene(pdx,index);
-}
-#endif
 
 //-----------------------------
 /* Interrupt handler. Read/modify/write the command register to disable
@@ -5301,47 +5090,6 @@ static irqreturn_t irqhandler(int irq, void  *info)
 					tasklet_schedule(&pdx->dpc_audio_tasklet[0]);
 				}
 			}
-			#if 0
-			if((IntState &0x200) == 0x200) // Audio ch1 done
-			{
-
-			Int_Value +=  0x200;
-			if(pdx->m_nAudioBusy[1] ==0 )
-			{
-			tmp = (READ_REGISTER_ULONG(pdx,(CVBS_IN_BASE + (40+1) * PCIE_BARADDROFSIZE)))&0x01;
-			pdx->m_nAudioBufferIndex[1] = tmp;
-			pdx->audio_data[1]= pdx->m_nAudioBufferIndex[1];
-			tasklet_schedule(&pdx->dpc_audio_tasklet[1]);
-			}
-			}
-			if((IntState &0x400) == 0x400) // Audio ch2 done
-			{
-
-			Int_Value +=  0x400;
-
-			if(pdx->m_nAudioBusy[2] ==0 )
-			{
-			//DbgPrint("OnInterrupt Audio ch-%x pdx->m_nAudioBusy[2] =%d\n", 2,pdx->m_nAudioBusy[2]);
-			tmp = (READ_REGISTER_ULONG(pdx,(CVBS_IN_BASE + (40+2) * PCIE_BARADDROFSIZE)))&0x01;
-			pdx->m_nAudioBufferIndex[2] = tmp;
-			pdx->audio_data[2]= pdx->m_nAudioBufferIndex[2];
-			tasklet_schedule(&pdx->dpc_audio_tasklet[2]);
-			}
-			}
-			if((IntState &0x800) == 0x800) // Audio ch3 done
-			{
-
-			Int_Value +=  0x800;
-			//DbgPrint("OnInterrupt Audio ch-%x pdx->m_nAudioBusy[3] =%d\n", 3,pdx->m_nAudioBusy[3]);
-			if(pdx->m_nAudioBusy[3] ==0 )
-			{
-			tmp = (READ_REGISTER_ULONG(pdx,(CVBS_IN_BASE + (40+3) * PCIE_BARADDROFSIZE)))&0x01;
-			pdx->m_nAudioBufferIndex[3] = tmp;
-			pdx->audio_data[3]= pdx->m_nAudioBufferIndex[3];
-			tasklet_schedule(&pdx->dpc_audio_tasklet[3]);
-			}
-			}
-			#endif
 			//--------------
 			/*
 			 * Acknowledge exactly the bits that are set. Int_Value was
@@ -5510,7 +5258,6 @@ static void SetDMAAddress(struct hws_pcie_dev *pdx)
 
 		}
 		cnt +=8;
-		#if 1
 		if(pdx->m_pbyAudioBuffer[i])
 		{
 			PhyAddr_A_Low = pdx->m_dwAudioBuffer[i];
@@ -5522,7 +5269,6 @@ static void SetDMAAddress(struct hws_pcie_dev *pdx)
 			WRITE_REGISTER_ULONG(pdx,(CBVS_IN_BUF_BASE + ((8+i)*PCIE_BARADDROFSIZE)), ((i+1)*PCIEBAR_AXI_BASE+PCI_Addr)); //Buffer 1 address
 			READ_REGISTER_ULONG(pdx,(CBVS_IN_BUF_BASE + ((8+i)*PCIE_BARADDROFSIZE)));
 		}
-		#endif
 	}
 	WRITE_REGISTER_ULONG(pdx,INT_EN_REG_BASE, 0x3ffff); //enable PCI Interruput
 	//WRITE_REGISTER_ULONG(PCIEBR_EN_REG_BASE, 0xFFFFFFFF);
@@ -5654,29 +5400,6 @@ static void CheckVideFmt (struct hws_pcie_dev *pdx)
 
 	for(i =0; i<pdx->m_nCurreMaxVideoChl;i++)
 	{
-		#if 0
-		value =  ReadDevReg((DWORD)(CVBS_IN_BASE + ((91+i*2)*PCIE_BARADDROFSIZE)));
-		m_brightness[i] = value&0xFF;
-		m_contrast[i] =  (value>>8)&0xFF;
-		m_hue[i] = (value>>16)&0xFF;
-		m_saturation[i] = (value>>24)&0xFF;
-		//DbgPrint("[MV]value[%d]= %X\n",i,value);
-		if((g_contrast[i] != m_contrast[i])||(g_brightness[i] != m_brightness[i])||(g_saturation[i] != m_saturation[i])||(g_hue[i] != m_hue[i]))
-		{
-
-		//DbgPrint("[MV]m_brightness[%d]= %d %d \n",i,m_brightness[i],g_brightness[i]);
-		//DbgPrint("[MV]m_contrast[%d]= %d %d\n",i,m_contrast[i],g_contrast[i]);
-		//DbgPrint("[MV]m_hue[%d]= %d %d \n",i,m_hue[i],g_hue[i]);
-		//DbgPrint("[MV]m_saturation[%d]= %d %d \n",i,m_saturation[i],g_saturation[i] );
-		SetData = g_saturation[i]<<24;
-		SetData  |=g_hue[i]<<16;
-		SetData  |=g_contrast[i]<<8;
-		SetData  |=g_brightness[i];
-		//DbgPrint("[MV]value[%d]= %X %X\n",i,value,SetData);
-		WriteDevReg((DWORD)(CVBS_IN_BASE + ((91+i*2)*PCIE_BARADDROFSIZE)), SetData);
-
-	}
-	#endif
 	/*
 	 * The IRQ thread reads the geometry and quarter sizes this may change.
 	 * A size change may stop and restart the engine, so engine_lock comes
