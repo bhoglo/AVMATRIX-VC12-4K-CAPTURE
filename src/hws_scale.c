@@ -1033,59 +1033,6 @@ static  void UHD_To_2560x1440_Scaler(BYTE *pSrc,BYTE *pOut,int in_w,int in_h,int
 	}
 
 }
-static void UHDW_To_2560X1440_Scaler(BYTE *pSrc,BYTE *pOut,int in_w,int in_h,int out_w,int out_h)
-{
-	int x,y;
-	BYTE*pSrcBuf;
-	DWORD *pSrcData;
-	DWORD *pDestData;
-	BYTE*pSrcTmp;
-	BYTE*pDestTmp;
-
-	pSrcBuf = pSrc;
-	pDestData = (DWORD *) pOut;
-	//----------4096x2160->2560x1440
-	for(y=0;y<in_h;y++)
-	{
-		switch(y%6)
-		{
-			case 0:
-			case 2:
-			case 4:
-			case 5:
-			{
-				pSrcData = (DWORD *)(pSrcBuf + 128*2);
-				for(x=0;x<(in_w-256);)
-				{
-					*pDestData = *pSrcData;
-					pDestTmp =(BYTE *)pDestData;
-					pSrcData++;
-					pSrcTmp =(BYTE *)pSrcData;
-					pDestTmp[2] =  pSrcTmp[0];
-					pDestTmp[3] =  pSrcTmp[3];
-					pDestData +=1;
-					pSrcData++;
-					*pDestData = *pSrcData;
-
-					pDestData +=1;
-					pSrcData +=2;
-					x= x+6;
-				}
-
-				pSrcBuf += in_w*2;
-				break;
-			}
-			case 1:
-			case 3:
-			{
-				pSrcBuf += in_w*2;
-				break;
-			}
-		}
-
-	}
-
-}
 static  void UHDW_To_HD_Scaler(BYTE *pSrc,BYTE *pOut,int in_w,int in_h,int out_w,int out_h)
 {
 	int x,y;
@@ -1355,10 +1302,11 @@ void VideoScaler(BYTE *pSrc,BYTE *pOut,int in_w,int in_h,int out_w,int out_h)
 	{
 		UHDW_To_HD_Scaler(pSrc,pOut,in_w,in_h,out_w,out_h);
 	}
-	else if((in_w == 4096)&&(in_h==2160)&&(out_w==2560)&&(out_h==1440))
-	{
-		UHDW_To_2560X1440_Scaler(pSrc,pOut,in_w,in_h,out_w,out_h);
-	}
+	/*
+	 * No 4096x2160 -> 2560x1440 case: UHDW_To_2560X1440_Scaler() reads 16
+	 * source bytes per 6 pixels, runs into the next row and past the frame
+	 * on the last one (tests/unit, 7.5); the general scaler below handles it.
+	 */
 	else if((in_w == 2560)&&(in_h==1440)&&(out_w==1920)&&(out_h==1080))
 	{
 		V2560X1440_To_FHD_Scaler(pSrc,pOut,in_w,in_h,out_w,out_h);
