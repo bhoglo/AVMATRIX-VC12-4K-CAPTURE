@@ -723,4 +723,13 @@ Driver `7784170` (DKMS `1.0.0.230324.6.7`), `debug_dma=0` (the default) and `zer
 - The second stream asked for 1920×1080 but got 3840×2160, the size OBS held, so `framecheck.py`'s unique-frame count from this run is wrong (it cut 4K frames into 1080p pieces). The sequence checks come from the log and stand. `switchtest.sh` now reads the format back.
 - An earlier attempt with GPU mode changes was stopped by the GPU loss in 6.21.
 
-Still open for 6.10: the IRQ-thread wakeup latency at 1080p240 with `debug_dma` off and on.
+**IRQ-thread wakeup latency at 1080p240.** Driver DKMS `1.0.0.230324.6.7`, `zero_copy=0` (the copy path, where the canary sits), the PC's GPU at 1920×1080p239.96, set while nothing was capturing (6.21). For each run the driver was reloaded with `debug_dma` 0 or 1, a 3,000-frame `v4l2-ctl` capture started, and ftrace recorded `sched_waking` and `sched_switch` for the IRQ thread for 10 s; the latency is from the thread's wakeup to it running (ftrace timestamps have 1 µs resolution).
+
+| `debug_dma` | Wakeups | Median | p99 | p99.9 | Max | Frames lost |
+|---|---|---|---|---|---|---|
+| 0 | 4,808 | 1 µs | 5 µs | 16 µs | 18 µs | 0 |
+| 1 | 4,810 | 1 µs | 8 µs | 17 µs | 23 µs | 0 |
+| 0 | 4,810 | 1 µs | 4 µs | 16 µs | 28 µs | 0 |
+| 1 | 4,809 | 1 µs | 4 µs | 16 µs | 32 µs | 0 |
+
+No difference beyond run-to-run noise: the canary scan, now outside `cap_lock`, doesn't delay the IRQ thread. No late copies, no `IO_PAGE_FAULT` or GPU loss; the output went back to 3840×2160p60 with nothing capturing, and the driver to its defaults.
