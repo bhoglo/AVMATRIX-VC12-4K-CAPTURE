@@ -4906,8 +4906,17 @@ static void hws_remove(struct pci_dev *pdev)
 	for (i = 0; i < dev->m_nCurreMaxVideoChl; i++)
 		if (dev->audio[i].card)
 			snd_card_disconnect(dev->audio[i].card);
-	for (i = 0; i < dev->m_nCurreMaxVideoChl; i++)
+	for (i = 0; i < dev->m_nCurreMaxVideoChl; i++) {
+		struct hws_vfh_ctx *ctx;
+		unsigned long flags;
+
 		video_unregister_device(&dev->video[i].vdev);
+		/* wake readers blocked in DQBUF or poll: no frame will come */
+		spin_lock_irqsave(&dev->video[i].consumers_lock, flags);
+		list_for_each_entry(ctx, &dev->video[i].consumers, node)
+			vb2_queue_error(&ctx->vbq);
+		spin_unlock_irqrestore(&dev->video[i].consumers_lock, flags);
+	}
 	debugfs_remove_recursive(dev->dbg);
 	/* then everything that touches the card or its buffers */
 	StopKSThread(dev);
