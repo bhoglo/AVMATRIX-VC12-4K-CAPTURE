@@ -45,6 +45,29 @@ static const char *hws_zc_unavailable(struct hws_pcie_dev *pdx);
 static bool zero_copy;	/* module parameter, defined with hws_zc_wanted() */
 
 /*
+ * Zero-copy has the card write the app's buffers, which videobuf2-dma-contig
+ * allocates. Some distribution kernels don't build it (RHEL 9); there the
+ * driver uses only the copy path. NULL when it is missing.
+ */
+static const struct vb2_mem_ops *hws_zc_memops(void)
+{
+#if IS_ENABLED(CONFIG_VIDEOBUF2_DMA_CONTIG)
+	return &vb2_dma_contig_memops;
+#else
+	return NULL;
+#endif
+}
+
+static dma_addr_t hws_zc_dma_addr(struct vb2_buffer *vb)
+{
+#if IS_ENABLED(CONFIG_VIDEOBUF2_DMA_CONTIG)
+	return vb2_dma_contig_plane_dma_addr(vb, 0);
+#else
+	return 0;
+#endif
+}
+
+/*
  * Debug-only DMA checks, read at load: the canary in each DMA buffer's
  * unused gap, the register snapshots in debugfs regsnaps, and the stray-write
  * log. Off by default, since the scan reads up to 14 MiB every 250 ms.
@@ -472,7 +495,7 @@ static int hws_open(struct file *file)
     /* v4l2 file-handle */
     v4l2_fh_init(&ctx->fh, &videodev->vdev);
     file->private_data = &ctx->fh;
-	#if (LINUX_VERSION_CODE < KERNEL_VERSION(6,18,0))
+	#ifndef HWS_FH_TAKES_FILE	/* see src/Makefile */
 	v4l2_fh_add(&ctx->fh);
 	#else
 	v4l2_fh_add(&ctx->fh, file);
@@ -491,16 +514,16 @@ static int hws_open(struct file *file)
     q->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC | V4L2_BUF_FLAG_TSTAMP_SRC_EOF;
     /*
      * Per-open lock for this queue only. vb2 releases it while a blocking
-     * DQBUF waits (via wait_prepare/wait_finish before 7.0, by itself since),
-     * which the pre-7.0 ops also need: they unlock q->lock and must not see
-     * NULL.
+     * DQBUF waits: through wait_prepare/wait_finish where vb2_ops still has
+     * them, which unlock q->lock and so must not see NULL, and by itself
+     * otherwise.
      */
     q->lock = &ctx->qmutex;
     q->dev = &pdx->pdev->dev;
 
     ret = vb2_queue_init(q);
     if (ret) {
-		#if (LINUX_VERSION_CODE < KERNEL_VERSION(6,18,0))
+		#ifndef HWS_FH_TAKES_FILE	/* see src/Makefile */
 		v4l2_fh_del(&ctx->fh);
 		#else
 		v4l2_fh_del(&ctx->fh, file);
@@ -569,7 +592,7 @@ static int hws_release(struct file *file)
     spin_unlock_irqrestore(&pdx->videoslock[videodev->index], flags);
 
     /* v4l2 fh cleanup */
-	#if (LINUX_VERSION_CODE < KERNEL_VERSION(6,18,0))
+	#ifndef HWS_FH_TAKES_FILE	/* see src/Makefile */
 	v4l2_fh_del(&ctx->fh);
 	#else
 	v4l2_fh_del(&ctx->fh, file);
@@ -1018,7 +1041,7 @@ static void hws_pick_mem_ops(struct hws_vfh_ctx *ctx, u32 memory)
 	if (memory == V4L2_MEMORY_MMAP && READ_ONCE(zero_copy) && why)
 		dev_info_once(&pdx->pdev->dev, "zero_copy is on but unavailable: %s; using the copy path\n", why);
 	ctx->vbq.mem_ops = memory == V4L2_MEMORY_MMAP && hws_zc_wanted(pdx) ?
-			   &vb2_dma_contig_memops : &vb2_vmalloc_memops;
+			   hws_zc_memops() : &vb2_vmalloc_memops;
 }
 
 /* buffer ioctls: the caller's own queue, under its own lock */
@@ -1175,7 +1198,7 @@ static int hws_queue_setup_multi(struct vb2_queue *q,
     *num_planes = 1;
     sizes[0] = size;
     /* room for an over-long last quarter when the card writes the buffer itself */
-    if (q->mem_ops == &vb2_dma_contig_memops)
+    if (q->mem_ops == hws_zc_memops())
         sizes[0] += HWS_ZC_SLACK;
     return 0;
 }
@@ -1199,8 +1222,7 @@ static int hws_buffer_prepare_multi(struct vb2_buffer *vb)
 
     vb2_set_plane_payload(vb, 0, size);
     buf->mem = vb2_plane_vaddr(vb, 0);
-    buf->dma = vb->vb2_queue->mem_ops == &vb2_dma_contig_memops ?
-               vb2_dma_contig_plane_dma_addr(vb, 0) : 0;
+    buf->dma = vb->vb2_queue->mem_ops == hws_zc_memops() ? hws_zc_dma_addr(vb) : 0;
     return 0;
 }
 
@@ -1309,7 +1331,7 @@ static const struct vb2_ops hwspcie_video_multi_qops = {
     .queue_setup    = hws_queue_setup_multi,
     .buf_prepare    = hws_buffer_prepare_multi,
     .buf_queue      = hws_buffer_queue_multi,
-    #if (LINUX_VERSION_CODE < KERNEL_VERSION(7,0,0))
+    #ifndef HWS_VB2_NO_WAIT_PREPARE	/* see src/Makefile */
     .wait_prepare   = vb2_ops_wait_prepare,
     .wait_finish    = vb2_ops_wait_finish,
     #endif
@@ -1866,6 +1888,8 @@ static bool hws_iommu_translates(struct device *dev)
  */
 static const char *hws_zc_unavailable(struct hws_pcie_dev *pdx)
 {
+	if (!hws_zc_memops())
+		return "kernel built without videobuf2-dma-contig";
 	if (!pdx->m_DeviceHW_Version || !pdx->m_MaxHWVideoBufferSize)
 		return "needs FPGA 122 or later";
 	if (pdx->pdev->vendor != 0x8888 || pdx->pdev->device != 0x8581)
@@ -2005,7 +2029,7 @@ static struct hwsvideo_buffer *hws_zc_pick(struct hws_pcie_dev *pdx, bool direct
 		return NULL;
 	spin_lock_irqsave(&v->consumers_lock, flags);
 	list_for_each_entry(ctx, &v->consumers, node) {
-		if (ctx->streaming && ctx->decimate == 1 && ctx->vbq.mem_ops == &vb2_dma_contig_memops &&
+		if (ctx->streaming && ctx->decimate == 1 && ctx->vbq.mem_ops == hws_zc_memops() &&
 		    (!found || ctx == v->zc_ctx))
 			found = ctx;
 	}
@@ -2690,11 +2714,11 @@ int hws_audio_register(struct hws_pcie_dev *dev)
 		snd_pcm_lib_preallocate_pages_for_all(
 			pcm,
 			SNDRV_DMA_TYPE_CONTINUOUS,
-			#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5,19,0))
-			card->dev,
-			#else
+			#ifdef snd_dma_continuous_data	/* a macro until 5.19; RHEL 9.10 drops it too */
 			snd_dma_continuous_data(GFP_KERNEL),
-											  #endif
+			#else
+			card->dev,
+			#endif
 											  audio_pcm_hardware.buffer_bytes_max,
 										audio_pcm_hardware.buffer_bytes_max
 		);
