@@ -2,9 +2,7 @@ HwsUHDX1Capture-objs := hws_video.o
 
 obj-m = HwsUHDX1Capture.o
 
-EXTRA_CFLAGS += -I$(src)
-# strip debug symbols
-EXTRA_LDFLAGS += -S
+ccflags-y += -I$(src)
 
 ifneq ($(KERNELRELEASE),)
 KERNELDIR ?= /lib/modules/$(KERNELRELEASE)/build
