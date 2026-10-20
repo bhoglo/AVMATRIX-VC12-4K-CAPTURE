@@ -630,7 +630,40 @@ The 32 kHz capture began with 1,024 frames that exactly matched the end of the 4
 - A 1 kHz tone from the GPU's HDMI port came through at 1,000.0 Hz and full level.
 - The three test boot entries were removed afterwards; the default entry stayed `7.2.10-200` throughout.
 
+### 8-hour OBS session at 4K60
+
+Driver `7784170` (DKMS `1.0.0.230324.6.7`), `zero_copy=1` from `/etc/modprobe.d/hws.conf`, normal boot (IOMMU `DMA-FQ`). OBS captured 3840×2160 YUYV over zero-copy from the PC's HDMI-A-2 output at 3840×2160p60, with a quiet 1 kHz tone (about −38 dBFS) played into the card through `hw:2,9`. Sleep and screen power-off were blocked with `systemd-inhibit` and `kde-inhibit` for the run. `tests/soak.sh 8 30`, 2026-10-19 23:11 to 2026-10-20 07:12:
+
+| time | fps | lost | zero-copy failed | audio gaps | OBS RSS | MemAvailable | IO_PAGE_FAULT | stray writes | PipeWire errors |
+|---|---|---|---|---|---|---|---|---|---|
+| 23:12 | 59.99 | 0 | 0 | 1 | 433 MiB | 84806 MiB | 0 | 0 | 0 |
+| 23:42 | 59.99 | 0 | 0 | 1 | 449 MiB | 85932 MiB | 0 | 0 | 0 |
+| 00:12 | 59.99 | 0 | 0 | 1 | 449 MiB | 85878 MiB | 0 | 0 | 0 |
+| 00:42 | 59.99 | 0 | 0 | 1 | 458 MiB | 85494 MiB | 0 | 0 | 0 |
+| 01:12 | 59.99 | 0 | 0 | 1 | 458 MiB | 85565 MiB | 0 | 0 | 0 |
+| 01:42 | 59.99 | 0 | 0 | 1 | 459 MiB | 84499 MiB | 0 | 0 | 0 |
+| 02:12 | 59.99 | 0 | 0 | 1 | 459 MiB | 84287 MiB | 0 | 0 | 0 |
+| 02:42 | 59.99 | 0 | 0 | 1 | 459 MiB | 85667 MiB | 0 | 0 | 0 |
+| 03:12 | 59.99 | 0 | 0 | 1 | 459 MiB | 86190 MiB | 0 | 0 | 0 |
+| 03:42 | 59.99 | 0 | 0 | 1 | 459 MiB | 84736 MiB | 0 | 0 | 0 |
+| 04:12 | 59.99 | 0 | 0 | 1 | 459 MiB | 86248 MiB | 0 | 0 | 0 |
+| 04:42 | 59.99 | 0 | 0 | 1 | 459 MiB | 86374 MiB | 0 | 0 | 0 |
+| 05:12 | 59.99 | 0 | 0 | 1 | 459 MiB | 85260 MiB | 0 | 0 | 0 |
+| 05:42 | 59.99 | 0 | 0 | 1 | 459 MiB | 86300 MiB | 0 | 0 | 0 |
+| 06:12 | 59.99 | 0 | 0 | 1 | 459 MiB | 85269 MiB | 0 | 0 | 0 |
+| 06:42 | 59.99 | 0 | 0 | 1 | 459 MiB | 86236 MiB | 0 | 0 | 0 |
+| 07:12 | 59.99 | 0 | 0 | 1 | 459 MiB | 85253 MiB | 0 | 0 | 0 |
+
+- **Totals at the end:** 1,796,601 frames, 0 lost; zero-copy 1,790,121 frames, 0 failed, 0 late writes, 0 buffers outside the window; OBS's consumer had no buffer missing once.
+- **Rate:** 59.99 in every row; `soak.sh` truncates to two decimals, and the card counted 1,796,601 frames in about 8 h 00 min, which is 60 fps.
+- **Audio:** no gap during the run (the 1 counted before the tone started; two more came after the tone stopped at the end).
+- **Memory:** OBS grew from 433 to 459 MiB in the first 2.5 h and then stayed at 459 MiB for 5.5 h. Available system memory moved between 84.3 and 86.4 GiB with no trend.
+- **Kernel and PipeWire:** 0 `IO_PAGE_FAULT`, 0 stray writes, 0 PipeWire errors or xruns, no WARNING or BUG.
+
+### GPU loss before the session (not the driver, as far as the logs show)
+
+During setup, with OBS capturing at 1280×720, `kscreen-doctor` switched HDMI-A-2 from 1280×720 to 3840×2160p60 at 22:58:47. 1.3 s later the kernel logged `amdgpu 0000:03:00.0: device lost from bus!` (Radeon RX 9070), then display-engine timeouts, and the desktop stopped responding; the operator rebooted. The card sits behind the chipset (00:02.1) and the GPU on a CPU root port (00:01.1), in different IOMMU groups; the log has no AER error and no IOMMU fault from the card, and about 66 earlier mode changes that night, some with OBS closed and some under other IOMMU modes, ran clean. No earlier boot in the journal has a GPU loss. Recorded as an amdgpu event during a modeset; the soak made no mode changes.
+
 ### Not done
 
 - **A second, non-X3D machine:** none available.
-- **The 8-hour OBS session at 4K60:** to be scheduled with the operator.
