@@ -3938,6 +3938,20 @@ static void hws_video_half(struct hws_pcie_dev *pdx, int ch, int half, u64 ts)
 		 * source uses HDCP: the frame is delivered black instead.
 		 */
 		v->frame_hdcp = hws_hdcp_active(pdx, ch);
+		/*
+		 * The zero-copy consumer gets this frame in zf. A copy buffer it
+		 * still holds from a frame whose bottom half was lost would get
+		 * the same frame too, so fail that buffer instead.
+		 */
+		if (zf) {
+			struct hws_vfh_ctx *zctx = vb2_get_drv_priv(zf->vb.vb2_buf.vb2_queue);
+
+			if (zctx->held) {
+				list_del(&zctx->held->queue);
+				hws_complete_buffer(zctx->held, VB2_BUF_STATE_ERROR);
+				zctx->held = NULL;
+			}
+		}
 		hws_hold_buffers(v, pdx->m_FrameSeq[ch], out_size,
 				 zf ? vb2_get_drv_priv(zf->vb.vb2_buf.vb2_queue) : NULL);
 		if (v->frame_hdcp) {
