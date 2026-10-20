@@ -599,3 +599,38 @@ The 32 kHz capture began with 1,024 frames that exactly matched the end of the 4
 
 - Every mode delivered through the copy path, with `zero_copy` 0 and 1 alike (0 zero-copy frames). The first stream after a change to 120 or 240 Hz on the copy path again started slightly slow (119.68 and 237.20 fps over 300 frames, no gaps), as in the matrix above.
 - **4096×2160p60 from the GPU:** the driver's input and the DV timings read 3840×2160, and 300 frames captured at 60.00 fps with no gaps or repeats. The card scales 4096-wide input to 3840 before the FPGA (stage 3), so the driver's own 3840 clamp for 4 MiB buffers can't be exercised with this card.
+
+**`amd_iommu=off`** (one boot; the card has no IOMMU group), driver `7784170`. The same fallback message as under `iommu=pt`; the DMA buffers are 4 MiB at physical addresses below 4 GB (buffer 0 at 0x55800000, address table window 0x40000000), and zero-copy reports "IOMMU not translating". `tests/modematrix.sh`:
+
+| zero_copy | GPU mode | Driver input | fps | delta median / stdev ms | unique | gaps | repeats | errors | zero-copy frames |
+|---|---|---|---|---|---|---|---|---|---|
+| 0 | 1280x720@60.00 | 1280x720 | 60.00 | 16.67 / 0.13 | 2/300 | 0 | 0 | 0 | 0 |
+| 0 | 1920x1080@60.00 | 1920x1080 | 60.00 | 16.67 / 0.12 | 2/300 | 0 | 0 | 0 | 0 |
+| 0 | 2560x1440@59.95 | 2560x1440 | 59.95 | 16.68 / 0.12 | 2/300 | 0 | 0 | 0 | 0 |
+| 0 | 3840x2160@60.00 | 3840x2160 | 60.00 | 16.67 / 0.01 | 2/300 | 0 | 0 | 0 | 0 |
+| 0 | 1920x1080@120.00 | 1920x1080 | 119.87 | 8.33 / 0.08 | 2/300 | 0 | 0 | 0 | 0 |
+| 0 | 1920x1080@239.96 | 1920x1080 | 239.96 | 4.17 / 0.01 | 4/300 | 0 | 0 | 0 | 0 |
+| 0 | 1920x1080@120.00 | 1920x1080 | 120.00 | 8.33 / 0.00 | 2/300 | 0 | 0 | 0 | 0 |
+| 0 | 3840x2160@60.00 | 3840x2160 | 60.00 | 16.67 / 0.00 | 2/300 | 0 | 0 | 0 | 0 |
+| 0 | 2560x1440@59.95 | 2560x1440 | 59.95 | 16.68 / 0.01 | 2/300 | 0 | 0 | 0 | 0 |
+| 0 | 1920x1080@60.00 | 1920x1080 | 60.00 | 16.67 / 0.07 | 2/300 | 0 | 0 | 0 | 0 |
+| 0 | 1280x720@60.00 | 1280x720 | 60.00 | 16.67 / 0.00 | 2/300 | 0 | 0 | 0 | 0 |
+| 1 | 1280x720@60.00 | 1280x720 | 60.00 | 16.67 / 0.02 | 2/300 | 0 | 0 | 0 | 0 |
+| 1 | 1920x1080@60.00 | 1920x1080 | 60.00 | 16.67 / 0.01 | 2/300 | 0 | 0 | 0 | 0 |
+| 1 | 2560x1440@59.95 | 2560x1440 | 59.95 | 16.68 / 0.01 | 2/300 | 0 | 0 | 0 | 0 |
+| 1 | 3840x2160@60.00 | 3840x2160 | 60.00 | 16.67 / 0.01 | 2/300 | 0 | 0 | 0 | 0 |
+| 1 | 1920x1080@120.00 | 1920x1080 | 119.87 | 8.33 / 0.08 | 2/300 | 0 | 0 | 0 | 0 |
+| 1 | 1920x1080@239.96 | 1920x1080 | 239.97 | 4.17 / 0.00 | 5/300 | 0 | 0 | 0 | 0 |
+| 1 | 1920x1080@120.00 | 1920x1080 | 120.00 | 8.33 / 0.00 | 2/300 | 0 | 0 | 0 | 0 |
+| 1 | 3840x2160@60.00 | 3840x2160 | 60.00 | 16.67 / 0.03 | 2/300 | 0 | 0 | 0 | 0 |
+| 1 | 2560x1440@59.95 | 2560x1440 | 59.95 | 16.68 / 0.01 | 2/300 | 0 | 0 | 0 | 0 |
+| 1 | 1920x1080@60.00 | 1920x1080 | 60.00 | 16.67 / 0.17 | 2/300 | 0 | 0 | 0 | 0 |
+| 1 | 1280x720@60.00 | 1280x720 | 60.00 | 16.67 / 0.15 | 2/300 | 0 | 0 | 0 | 0 |
+
+- A 1 kHz tone from the GPU's HDMI port came through at 1,000.0 Hz and full level.
+- The three test boot entries were removed afterwards; the default entry stayed `7.2.10-200` throughout.
+
+### Not done
+
+- **A second, non-X3D machine:** none available.
+- **The 8-hour OBS session at 4K60:** to be scheduled with the operator.
