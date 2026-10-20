@@ -8,6 +8,9 @@
 # on the system.
 set -euo pipefail
 [ "$(id -u)" -eq 0 ] || exec sudo -- "$0" "$@"
+# Ubuntu's DKMS asks for a Secure Boot key password through debconf; with
+# no terminal to ask on, let it skip that instead of waiting forever
+[ -t 0 ] || export DEBIAN_FRONTEND=noninteractive
 
 NAME=HwsUHDX1CaptureForLinux
 MODULE=HwsUHDX1Capture
@@ -56,7 +59,8 @@ for kb in /lib/modules/*/build; do
         continue
     fi
     echo "  building for kernel $k"
-    if ! dkms install -m "$NAME" -v "$VER" -k "$k" --force >/dev/null 2>&1; then
+    # output stays on the terminal: Ubuntu may ask for a key password here
+    if ! dkms install -m "$NAME" -v "$VER" -k "$k" --force; then
         echo "  build failed for $k; the log is under /var/lib/dkms/$NAME/$VER/build/make.log" >&2
         exit 1
     fi
@@ -65,24 +69,49 @@ done
 echo "Installed for: ${built[*]}"
 
 # Secure Boot only loads modules signed with an enrolled key.
+enrol=0
 if command -v mokutil >/dev/null && mokutil --sb-state 2>/dev/null | grep -qi "SecureBoot enabled"; then
-    key=""
-    for k in /var/lib/dkms/mok.pub /var/lib/shim-signed/mok/MOK.der; do
-        [ -e "$k" ] && { key=$k; break; }
+    # the certificate DKMS signed with: Ubuntu's shim-signed key or DKMS's
+    # own; when both exist, the one whose serial matches the module's
+    key="" serial=$(modinfo -F sig_key "$MODULE" 2>/dev/null | tr -d ':' | tr 'a-f' 'A-F')
+    for c in /var/lib/dkms/mok.pub /var/lib/shim-signed/mok/MOK.der; do
+        [ -e "$c" ] || continue
+        [ -z "$key" ] && key=$c
+        form=pem
+        [ "${c##*.}" = der ] && form=der
+        cs=$(openssl x509 -in "$c" -inform "$form" -noout -serial 2>/dev/null | sed 's/^serial=//')
+        [ -n "$serial" ] && [ "$cs" = "$serial" ] && { key=$c; break; }
     done
-    if [ -n "$key" ] && ! mokutil --test-key "$key" 2>/dev/null | grep -qi "is already enrolled"; then
+    state=""
+    [ -n "$key" ] && state=$(mokutil --test-key "$key" 2>/dev/null || true)
+    if [ -z "$key" ]; then
+        echo
+        echo "Secure Boot is on, but no DKMS signing key was found; see the README."
+    elif grep -qi "already enrolled" <<<"$state"; then
+        :
+    elif grep -qi "enrollment request" <<<"$state"; then
+        enrol=1
+        cat <<EOF
+
+Secure Boot is on, and the signing key ($key) is queued for enrolment.
+Reboot. When the blue MOK manager screen appears, press a key within
+10 seconds, then choose "Enroll MOK", "Continue", "Yes", enter the
+password you chose, and "Reboot". If the screen times out, run
+  sudo mokutil --import $key
+and reboot again.
+EOF
+    else
+        enrol=1
         cat <<EOF
 
 Secure Boot is on, and the key DKMS signs the module with isn't enrolled yet:
   1. sudo mokutil --import $key
      (choose a one-time password)
-  2. Reboot. In the blue MOK manager screen choose "Enroll MOK", then
-     "Continue", "Yes", enter that password, and reboot.
+  2. Reboot. When the blue MOK manager screen appears, press a key within
+     10 seconds, then choose "Enroll MOK", "Continue", "Yes", enter that
+     password, and "Reboot". If it times out, repeat step 1.
 Until then the kernel refuses the module ("Key was rejected by service").
 EOF
-    elif [ -z "$key" ]; then
-        echo
-        echo "Secure Boot is on, but no DKMS signing key was found; see the README."
     fi
 fi
 
@@ -101,6 +130,8 @@ if [ ${#missing[@]} -gt 0 ]; then
         *) echo "  the kernel's full module package for $(uname -r)" ;;
     esac
     echo "then run: sudo modprobe $MODULE"
+elif [ $enrol -eq 1 ]; then
+    echo "The driver loads after the key is enrolled and the PC has rebooted."
 elif [ -d "/sys/module/$MODULE" ]; then
     echo "An older version of the driver is loaded. Reboot to use $VER."
 elif modprobe "$MODULE" 2>/dev/null; then
