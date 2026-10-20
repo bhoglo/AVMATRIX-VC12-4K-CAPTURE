@@ -13,3 +13,8 @@ hws_install.log
 
 # Python
 __pycache__/
+
+# tests/unit
+tests/unit/test_calc
+tests/unit/test_scale
+tests/unit/test_calc_slack
