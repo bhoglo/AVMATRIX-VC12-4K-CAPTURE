@@ -3874,6 +3874,17 @@ static bool hws_copy_late(struct hws_video *v, struct hwsvideo_buffer *zf, u64 t
 	return !zf && v->zc_gap_prev && ktime_get_ns() - ts > v->zc_gap_prev;
 }
 
+/* debug_dma test knob (6.11): treat the K-th bottom half from now as not written. */
+static bool hws_dbg_stale(struct hws_pcie_dev *pdx, int half)
+{
+	unsigned int k = READ_ONCE(pdx->dbg_stale_bottom);
+
+	if (half || !k)
+		return false;
+	WRITE_ONCE(pdx->dbg_stale_bottom, k - 1);
+	return k == 1;
+}
+
 static void hws_video_half(struct hws_pcie_dev *pdx, int ch, int half, u64 ts)
 {
 	struct hws_video *v = &pdx->video[ch];
@@ -3923,7 +3934,7 @@ static void hws_video_half(struct hws_pcie_dev *pdx, int ch, int half, u64 ts)
 	}
 	/* the halves are coherent memory: no sync call, but order the reads after the interrupt */
 	dma_rmb();
-	if (*mark == HWS_HALF_MARK || (zf && !zf->zc_in[p])) {
+	if (*mark == HWS_HALF_MARK || (zf && !zf->zc_in[p]) || hws_dbg_stale(pdx, half)) {
 		/* stale: the card did not write this half here */
 		if (v->top_done) {
 			v->top_done = false;
@@ -3962,6 +3973,7 @@ static void hws_video_half(struct hws_pcie_dev *pdx, int ch, int half, u64 ts)
 				list_del(&zctx->held->queue);
 				hws_complete_buffer(zctx->held, VB2_BUF_STATE_ERROR);
 				zctx->held = NULL;
+				v->zc_held_failed++;
 			}
 		}
 		hws_hold_buffers(v, pdx->m_FrameSeq[ch], out_size,
@@ -6358,9 +6370,9 @@ static int hws_dbg_status_show(struct seq_file *m, void *unused)
 		   READ_ONCE(pdx->irq_unknown), READ_ONCE(pdx->irq_unknown_bits));
 	seq_printf(m, "copy path: frames failed because a copy ended late: %u\n", READ_ONCE(v->late_copies));
 	seq_printf(m, "engine restarts for a size change: %u\n", v->size_restarts);
-	seq_printf(m, "zero-copy: %s; frames %u, failed %u, late writes %u, buffers outside the window %u%s\n",
+	seq_printf(m, "zero-copy: %s; frames %u, failed %u, late writes %u, buffers outside the window %u, held copy buffers failed %u%s\n",
 		   hws_zc_unavailable(pdx) ?: (zero_copy ? "on" : "off"),
-		   v->zc_frames, v->zc_errors, v->zc_late, v->zc_outside,
+		   v->zc_frames, v->zc_errors, v->zc_late, v->zc_outside, v->zc_held_failed,
 		   v->zc_cur || v->zc_next ? ", in use" : "");
 	seq_printf(m, "audio: gaps filled with silence: %u, silence packets: %u%s\n",
 		   READ_ONCE(pdx->audio[0].silence_gaps), READ_ONCE(pdx->audio[0].silence_pkts),
@@ -6489,6 +6501,25 @@ static ssize_t hws_dbg_reset_write(struct file *f, const char __user *buf, size_
 	return n;
 }
 
+/* Treat the K-th bottom half from now as stale (6.11 test), as if the card hadn't written it. */
+static ssize_t hws_dbg_stale_write(struct file *f, const char __user *buf, size_t n, loff_t *pos)
+{
+	struct hws_pcie_dev *pdx = file_inode(f)->i_private;
+	unsigned int v;
+	int ret = kstrtouint_from_user(buf, n, 0, &v);
+
+	if (ret)
+		return ret;
+	WRITE_ONCE(pdx->dbg_stale_bottom, v);
+	return n;
+}
+
+static const struct file_operations hws_dbg_stale_fops = {
+	.owner = THIS_MODULE,
+	.write = hws_dbg_stale_write,
+	.llseek = noop_llseek,
+};
+
 static const struct file_operations hws_dbg_reset_fops = {
 	.owner = THIS_MODULE,
 	.write = hws_dbg_reset_write,
@@ -6506,6 +6537,7 @@ static void hws_debugfs_init(struct hws_pcie_dev *pdx)
 	if (debug_dma) {
 		debugfs_create_file("regsnaps", 0444, pdx->dbg, pdx, &hws_dbg_regsnaps_fops);
 		debugfs_create_file("simulate_reset", 0200, pdx->dbg, pdx, &hws_dbg_reset_fops);
+		debugfs_create_file("stale_bottom_halves", 0200, pdx->dbg, pdx, &hws_dbg_stale_fops);
 	}
 }
 

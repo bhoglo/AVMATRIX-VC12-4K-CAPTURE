@@ -1,0 +1,1 @@
+savedcmd_HwsUHDX1Capture.ko := ld -r -m elf_x86_64 -z noexecstack --no-warn-rwx-segments --build-id=sha1  -T /usr/src/kernels/7.2.10-200.nobara.fc44.x86_64/scripts/module.lds -o HwsUHDX1Capture.ko HwsUHDX1Capture.o HwsUHDX1Capture.mod.o .module-common.o
