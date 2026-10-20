@@ -840,7 +840,7 @@ QEMU/KVM with OVMF's Secure Boot firmware and Microsoft keys (`OVMF_CODE.secboot
 |---|---|---|
 | `mokutil --sb-state` | SecureBoot enabled | SecureBoot enabled |
 | DKMS signing key | `/var/lib/dkms/mok.pub` (DKMS's own) | `/var/lib/shim-signed/mok/MOK.der` (shim-signed) |
-| `install.sh` | printed the `mokutil --import` steps | first run hung: DKMS's debconf password prompt was hidden by `>/dev/null`. Fixed (`install.sh` commit after `3f9dc84`): output shown, no prompt without a terminal |
+| `install.sh` | printed the `mokutil --import` steps | first run hung: DKMS's debconf password prompt was hidden by `>/dev/null`. Fixed in `046c117`: output shown, no prompt without a terminal |
 | Before enrolment | `modprobe`: "Key was rejected by service" | the same |
 | Ubuntu's own prompt | — | under a terminal, "Configuring Secure Boot" asked for the password twice and queued the key; `install.sh` then said it was queued instead of asking for a second import |
 | MokManager | Enroll MOK → Continue → Yes → password → Reboot | the same |
