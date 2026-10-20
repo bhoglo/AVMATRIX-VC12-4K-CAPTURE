@@ -21,7 +21,7 @@ The kernel clone used for this work is `~/git/linux`, branch `hws-vc12-4k`, spar
   - "media: hws: Wait for IRQ handler before returning buffers" (2026-08-08, Hao-Qun Huang).
 - **HDMI audio, under review.** "media: hws: add HDMI audio capture support", v3, 5 patches, 2026-06-29. Patch 5 adds `hws_audio.c` (1,183 lines), an ALSA PCM capture device at 48 kHz stereo with 4096-byte packets. The other four rework the video DMA around the remap windows and a shared scratch arena. Patchwork state: changes requested. On 2026-07-27 Ben wrote that a v4 was drafted locally. Hans Verkuil asked about it on 2026-09-08. No v4 had been posted by 2026-10-20.
 
-  Its registers match this card: ring address at register 24 + ch, enable in register 3, interrupt bit 8 + ch, toggle at 40 + ch. Its `snd_pcm_hardware.info` has no `SNDRV_PCM_INFO_BATCH`, which this driver needed to stop PipeWire's crackle (stage 1 and PR #26 upstream).
+  Its registers match this card: ring address at register 24 + ch, enable in register 3, interrupt bit 8 + ch, toggle at 40 + ch. v3's `snd_pcm_hardware.info` has no `SNDRV_PCM_INFO_BATCH`, which this driver needed to stop PipeWire's crackle (stage 1 and PR #26 upstream). His newer branch `audio-upstream-v20-source-rewrite` (2026-09-13), probably the v4 in progress, does set it, and has no 8581 support.
 - **Cleanup series, under review.** "remove debug controls and lifecycle tracing", "quiesce interrupts without disabling shared IRQ", "serialize video quiesce with queue state" (3 patches, 2026-09-15, changes requested).
 - **A VC12-4K port, waiting for hardware.** Branch `feat/1chuhd-video-only-port` (5 commits, 2026-04-07) in `benhoff/hws`:
   - adds 8888:8581, 1F33:8581, 8888:85A1 and 8888:8591 as the "1CHUHD" family;
@@ -146,7 +146,7 @@ The PCM has to work the way our fixed driver does:
 - drop the two stale packets after each enable;
 - deliver silence while the source sends none.
 
-Ben's series covers the multi-channel cards with the same register scheme. For this card, what's left is testing it here, and the BATCH flag and the stale-packet drop if it lacks them.
+Ben's series covers the multi-channel cards with the same register scheme. For this card, what's left is testing it here, and the stale-packet drop if it lacks one.
 
 ## What doesn't carry over
 
