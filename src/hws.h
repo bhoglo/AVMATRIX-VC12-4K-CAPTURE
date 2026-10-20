@@ -348,13 +348,8 @@ struct hws_video{
 	struct hws_pcie_dev		*dev;
 	struct v4l2_device		v4l2_dev;
 	struct video_device		vdev;
-	struct vb2_queue		vq;
-	struct list_head		queue;
 	int                     fileindex;
-	int                     startstreamIndex;
-	unsigned				seqnr;
 	struct mutex			video_lock;
-	struct mutex			queue_lock;
 	/* B1: multi-consumer */
 	spinlock_t			consumers_lock;
 	struct mutex			ioctl_lock;	/* non-buffer ioctls (shared format/state) */
