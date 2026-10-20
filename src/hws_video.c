@@ -53,6 +53,7 @@ static bool debug_dma;
 module_param(debug_dma, bool, 0444);
 MODULE_PARM_DESC(debug_dma, "enable the DMA canary, register snapshots and debug knobs (default off)");
 static void hws_zc_stop(struct hws_pcie_dev *pdx, bool card_stopped);
+static void hws_unregister_video(struct hws_pcie_dev *dev);
 
 //------------------------
 
@@ -4062,20 +4063,38 @@ static void hws_adapters_init(struct hws_pcie_dev *dev)
 		hws_get_video_param(dev,i);
 	}
 }
-void hws_remove_deviceregister(struct hws_pcie_dev *dev)
+/*
+ * Lifetime. Open V4L2 and ALSA handles keep pointers into hws_pcie_dev after
+ * remove(), so it is freed only when the last reference goes: probe holds
+ * one (dropped at the end of remove()), each channel's v4l2_device holds one
+ * (dropped by hws_v4l2_release() after its last video handle closes), and
+ * each sound card holds one (dropped by its private_free).
+ */
+static void hws_dev_release(struct kref *ref)
 {
-	int i;
-	struct video_device *vdev ;
-	for(i=0;i<dev->m_nCurreMaxVideoChl;i++)
-	{
-		vdev = &(dev->video[i].vdev);
-		if(vdev)
-		{
-			v4l2_device_unregister(&dev->video[i].v4l2_dev);
-			vdev = NULL;
-		}
-	}
+	kfree(container_of(ref, struct hws_pcie_dev, ref));
 }
+
+static void hws_put_dev(struct hws_pcie_dev *pdx)
+{
+	kref_put(&pdx->ref, hws_dev_release);
+}
+
+/* The last handle of this channel's video node is closed. */
+static void hws_v4l2_release(struct v4l2_device *v4l2_dev)
+{
+	struct hws_video *video = container_of(v4l2_dev, struct hws_video, v4l2_dev);
+
+	/* control events can use the handler until the last close */
+	v4l2_ctrl_handler_free(&video->ctrl_hdl);
+	hws_put_dev(video->dev);
+}
+
+static void hws_card_private_free(struct snd_card *card)
+{
+	hws_put_dev(card->private_data);
+}
+
 int hws_video_register(struct hws_pcie_dev *dev)
 {
 	struct video_device *vdev ;
@@ -4086,10 +4105,17 @@ int hws_video_register(struct hws_pcie_dev *dev)
 	for(i=0;i<dev->m_nCurreMaxVideoChl;i++)
 	{
 		//printk("v4l2_device_register[%d]\n",i);
+		dev->video[i].dev = dev;
+		dev->video[i].v4l2_dev.release = hws_v4l2_release;
+		kref_get(&dev->ref);
 		err = v4l2_device_register(&dev->pdev->dev, &dev->video[i].v4l2_dev);
 		if(err<0){
 			printk(KERN_ERR " v4l2_device_register 0 error! \n");
-			hws_remove_deviceregister(dev);
+			hws_put_dev(dev);	/* not registered: no release callback */
+			while (--i >= 0) {
+				v4l2_device_unregister(&dev->video[i].v4l2_dev);
+				v4l2_device_put(&dev->video[i].v4l2_dev);
+			}
 			return -1;
 		}
 	}
@@ -4123,7 +4149,6 @@ int hws_video_register(struct hws_pcie_dev *dev)
 		mutex_init(&(dev->video[i].queue_lock));
 		spin_lock_init(&dev->video[i].consumers_lock);
 		mutex_init(&dev->video[i].ioctl_lock);
-		mutex_init(&dev->video[i].engine_lock);
 		INIT_LIST_HEAD(&dev->video[i].consumers);
 		atomic_set(&dev->video[i].engine_users, 0);
 
@@ -4180,12 +4205,7 @@ int hws_video_register(struct hws_pcie_dev *dev)
 	//printk("hws_video_register End\n");
 	return 0;
 	fail:
-	for(i=0;i<dev->m_nCurreMaxVideoChl;i++){
-		vdev = &dev->video[i].vdev;
-		video_unregister_device(vdev);
-		v4l2_ctrl_handler_free(&dev->video[i].ctrl_hdl);
-		v4l2_device_unregister(&dev->video[i].v4l2_dev);
-	}
+	hws_unregister_video(dev);	/* the control handlers go in hws_v4l2_release() */
 	return err;
 }
 
@@ -4396,12 +4416,17 @@ int hws_audio_register(struct hws_pcie_dev *dev)
 	for(i=0;i<dev->m_nCurreMaxVideoChl;i++){
 		sprintf(audioname,"%s %d",HWS_AUDOI_NAME,i+ai_index);
 		//printk("%s\n",audioname);
-		ret = snd_card_new(&dev->pdev->dev, -1, audioname, THIS_MODULE,	sizeof(struct hws_audio), &card);
+		ret = snd_card_new(&dev->pdev->dev, -1, audioname, THIS_MODULE, 0, &card);
 		// ret = snd_card_new(&dev->pdev->dev, audio_index[i], audio_id[i], THIS_MODULE,	sizeof(struct hws_audio), &card);
 		if (ret < 0){
 			printk(KERN_ERR "%s() ERROR: snd_card_new failed <%d>\n",__func__, ret);
 			goto fail0;
 		}
+		/* stored now so the error path frees it; the card holds a device reference */
+		dev->audio[i].card = card;
+		card->private_data = dev;
+		card->private_free = hws_card_private_free;
+		kref_get(&dev->ref);
 		strcpy(card->driver, KBUILD_MODNAME);
 		sprintf(card->shortname, "%s",audioname);
 		sprintf(card->longname, "%s",card->shortname);
@@ -4444,7 +4469,6 @@ int hws_audio_register(struct hws_pcie_dev *dev)
 			printk(KERN_ERR "%s() ERROR: snd_card_register failed\n",__func__);
 			goto fail1;
 		}
-		dev->audio[i].card =card;
 	}
 	//printk("hws_audio_register End\n");
 	return 0;
@@ -4477,6 +4501,8 @@ static void  WRITE_REGISTER_ULONG (struct hws_pcie_dev *pdx,u32 RegisterOffset,u
 {
 	//map_bar0_addr[RegisterOffset/4] = Value;
 	char *bar0;
+	if (pdx->m_Removed)	/* BAR0 is unmapped once remove() has run */
+		return;
 	bar0 = (char*)pdx->map_bar0_addr;
 	iowrite32(Value,bar0+RegisterOffset);
 	//map_bar0_addr[RegisterOffset/4] = Value;
@@ -4486,6 +4512,8 @@ static void  WRITE_REGISTER_ULONG (struct hws_pcie_dev *pdx,u32 RegisterOffset,u
 static u32 READ_REGISTER_ULONG (struct hws_pcie_dev *pdx,u32 RegisterOffset)
 {
 	char *bar0;
+	if (pdx->m_Removed)
+		return 0xFFFFFFFF;	/* reads like a card that is gone */
 	bar0 = (char*)pdx->map_bar0_addr;
 	//return(map_bar0_addr[RegisterOffset/4]);
 	return(ioread32(bar0+RegisterOffset));
@@ -4828,8 +4856,8 @@ static void hws_unregister_video(struct hws_pcie_dev *dev)
 
 	for (i = 0; i < dev->m_nCurreMaxVideoChl; i++) {
 		video_unregister_device(&dev->video[i].vdev);
-		v4l2_ctrl_handler_free(&dev->video[i].ctrl_hdl);
 		v4l2_device_unregister(&dev->video[i].v4l2_dev);
+		v4l2_device_put(&dev->video[i].v4l2_dev);
 	}
 }
 
@@ -4846,7 +4874,14 @@ static void hws_remove(struct pci_dev *pdev)
 
 	if (!dev || dev->map_bar0_addr == NULL)
 		return;
+	/* first, no new opens or ioctls; running PCM streams stop now */
+	for (i = 0; i < dev->m_nCurreMaxVideoChl; i++)
+		if (dev->audio[i].card)
+			snd_card_disconnect(dev->audio[i].card);
+	for (i = 0; i < dev->m_nCurreMaxVideoChl; i++)
+		video_unregister_device(&dev->video[i].vdev);
 	debugfs_remove_recursive(dev->dbg);
+	/* then everything that touches the card or its buffers */
 	StopKSThread(dev);
 	StopDevice(dev);
 	irq_teardown(dev);
@@ -4854,27 +4889,30 @@ static void hws_remove(struct pci_dev *pdev)
 	for (i = 0; i < dev->m_nCurreMaxVideoChl; i++) {
 		WRITE_ONCE(dev->audio[i].running, false);
 		cancel_delayed_work_sync(&dev->audio[i].silence_work);
+		cancel_work_sync(&dev->audio[i].audiowork);
 	}
 	destroy_workqueue(dev->auwq);
 	dev->auwq = NULL;
-	for (i = 0; i < dev->m_nCurreMaxVideoChl; i++) {
-		if (dev->audio[i].resampled_buf) {
-			vfree(dev->audio[i].resampled_buf);
-			dev->audio[i].resampled_buf = NULL;
-		}
-		if (dev->audio[i].card) {
-			snd_card_free(dev->audio[i].card);
-			dev->audio[i].card = NULL;
-		}
-	}
-	hws_unregister_video(dev);
 	DmaMemFreePool(dev);
+	dev->m_PciDeviceLost = 1;
+	dev->m_Removed = true;	/* register accessors do nothing from here on */
 	iounmap(dev->info.mem[0].internal_addr);
 	if (dev->msi_enabled)
 		pci_disable_msi(pdev);
 	pci_disable_device(pdev);
 	pci_set_drvdata(pdev, NULL);
-	kfree(dev);
+	/* last, drop the references; open handles keep dev until they close */
+	for (i = 0; i < dev->m_nCurreMaxVideoChl; i++) {
+		v4l2_device_unregister(&dev->video[i].v4l2_dev);
+		v4l2_device_put(&dev->video[i].v4l2_dev);
+	}
+	for (i = 0; i < dev->m_nCurreMaxVideoChl; i++) {
+		if (dev->audio[i].card) {
+			snd_card_free_when_closed(dev->audio[i].card);
+			dev->audio[i].card = NULL;
+		}
+	}
+	hws_put_dev(dev);
 }
 //---------------------------------------
 static void CheckCardStatus(struct hws_pcie_dev *pdx)
@@ -5551,6 +5589,7 @@ static struct hws_pcie_dev *alloc_dev_instance(struct pci_dev *pdev)
 	//lro->user_bar_idx = -1;
 	//lro->bypass_bar_idx = -1;
 	lro->irq_line = -1;
+	kref_init(&lro->ref);	/* probe's reference, see hws_dev_release() */
 
 	/* create a device to driver reference */
 	dev_set_drvdata(&pdev->dev, lro);
@@ -6421,6 +6460,7 @@ static int hws_probe(struct pci_dev *pdev, const struct pci_device_id *pci_id)
 	for (i = 0; i<MAX_VID_CHANNELS; i++)
 	{
 		mutex_init(&gdev->video[i].cap_lock);
+		mutex_init(&gdev->video[i].engine_lock);	/* the status thread's re-init takes it */
 		INIT_LIST_HEAD(&gdev->video[i].frame_bufs);
 		INIT_LIST_HEAD(&gdev->video[i].zc_release);
 		SetVideoFormteSize(gdev,i,1920,1080);
@@ -6482,6 +6522,7 @@ err_wq:
 	tasklet_kill(&gdev->dpc_audio_tasklet[0]);
 	destroy_workqueue(gdev->auwq);
 err_unmap:
+	gdev->m_Removed = true;
 	iounmap(gdev->info.mem[0].internal_addr);
 err_msi:
 	if (gdev->msi_enabled)
@@ -6489,7 +6530,7 @@ err_msi:
 	pci_disable_device(pdev);
 err_free:
 	pci_set_drvdata(pdev, NULL);
-	kfree(gdev);
+	hws_put_dev(gdev);
 	return ret;
 }
 
