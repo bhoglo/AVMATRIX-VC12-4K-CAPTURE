@@ -569,3 +569,33 @@ The 32 kHz capture began with 1,024 frames that exactly matched the end of the 4
 ### IOMMU modes
 
 **`iommu.strict=1`** (one boot, IOMMU type `DMA`), driver `7784170` (DKMS `1.0.0.230324.6.7`), the PC's GPU as the source. `tests/zctest.sh` at 1920×1080p240 and again at 3840×2160p60: every case delivered at the full rate with 0 sequence gaps or repeats, zero-copy 0 failed and 0 late writes, and **0 buffers outside the window, including the 100 start/stop cycles** that counted 174 under the default `DMA-FQ`. 0 `IO_PAGE_FAULT`, stray writes or warnings. This supports the inferred cause: with lazy (flush-queue) unmapping, freed addresses come back late, so quick reallocations land below the 0xE0000000 window and use the copy path. Under strict unmapping they are reused at once. The copy-path fallback is the designed behaviour, so nothing needs changing.
+
+**`iommu=pt`** (one boot, IOMMU type `identity`), driver `7784170`. At probe the driver logged "4.5 MiB DMA buffers unavailable (no IOMMU translation or CMA); 4096-wide input will be captured at 3840", and debugfs gave zero-copy's reason as "IOMMU not translating". `tests/modematrix.sh`:
+
+| zero_copy | GPU mode | Driver input | fps | delta median / stdev ms | unique | gaps | repeats | errors | zero-copy frames |
+|---|---|---|---|---|---|---|---|---|---|
+| 0 | 1280x720@60.00 | 1280x720 | 60.00 | 16.67 / 0.12 | 2/300 | 0 | 0 | 0 | 0 |
+| 0 | 1920x1080@60.00 | 1920x1080 | 60.00 | 16.67 / 0.00 | 2/300 | 0 | 0 | 0 | 0 |
+| 0 | 2560x1440@59.95 | 2560x1440 | 59.95 | 16.68 / 0.01 | 2/300 | 0 | 0 | 0 | 0 |
+| 0 | 3840x2160@60.00 | 3840x2160 | 60.00 | 16.67 / 0.00 | 2/300 | 0 | 0 | 0 | 0 |
+| 0 | 1920x1080@120.00 | 1920x1080 | 119.68 | 8.33 / 0.29 | 2/300 | 0 | 0 | 0 | 0 |
+| 0 | 1920x1080@239.96 | 1920x1080 | 237.20 | 4.17 / 0.84 | 6/300 | 0 | 0 | 0 | 0 |
+| 0 | 1920x1080@120.00 | 1920x1080 | 120.01 | 8.33 / 0.02 | 2/300 | 0 | 0 | 0 | 0 |
+| 0 | 3840x2160@60.00 | 3840x2160 | 60.00 | 16.67 / 0.03 | 2/300 | 0 | 0 | 0 | 0 |
+| 0 | 2560x1440@59.95 | 2560x1440 | 59.95 | 16.68 / 0.10 | 2/300 | 0 | 0 | 0 | 0 |
+| 0 | 1920x1080@60.00 | 1920x1080 | 60.00 | 16.67 / 0.10 | 2/300 | 0 | 0 | 0 | 0 |
+| 0 | 1280x720@60.00 | 1280x720 | 60.00 | 16.67 / 0.18 | 2/300 | 0 | 0 | 0 | 0 |
+| 1 | 1280x720@60.00 | 1280x720 | 60.00 | 16.67 / 0.16 | 2/300 | 0 | 0 | 0 | 0 |
+| 1 | 1920x1080@60.00 | 1920x1080 | 60.00 | 16.67 / 0.07 | 2/300 | 0 | 0 | 0 | 0 |
+| 1 | 2560x1440@59.95 | 2560x1440 | 59.95 | 16.68 / 0.01 | 2/300 | 0 | 0 | 0 | 0 |
+| 1 | 3840x2160@60.00 | 3840x2160 | 60.00 | 16.67 / 0.00 | 2/300 | 0 | 0 | 0 | 0 |
+| 1 | 1920x1080@120.00 | 1920x1080 | 120.00 | 8.33 / 0.00 | 2/300 | 0 | 0 | 0 | 0 |
+| 1 | 1920x1080@239.96 | 1920x1080 | 239.96 | 4.17 / 0.02 | 4/300 | 0 | 0 | 0 | 0 |
+| 1 | 1920x1080@120.00 | 1920x1080 | 120.00 | 8.33 / 0.00 | 2/300 | 0 | 0 | 0 | 0 |
+| 1 | 3840x2160@60.00 | 3840x2160 | 60.00 | 16.67 / 0.00 | 2/300 | 0 | 0 | 0 | 0 |
+| 1 | 2560x1440@59.95 | 2560x1440 | 59.95 | 16.68 / 0.00 | 2/300 | 0 | 0 | 0 | 0 |
+| 1 | 1920x1080@60.00 | 1920x1080 | 60.00 | 16.67 / 0.00 | 2/300 | 0 | 0 | 0 | 0 |
+| 1 | 1280x720@60.00 | 1280x720 | 60.00 | 16.67 / 0.04 | 2/300 | 0 | 0 | 0 | 0 |
+
+- Every mode delivered through the copy path, with `zero_copy` 0 and 1 alike (0 zero-copy frames). The first stream after a change to 120 or 240 Hz on the copy path again started slightly slow (119.68 and 237.20 fps over 300 frames, no gaps), as in the matrix above.
+- **4096×2160p60 from the GPU:** the driver's input and the DV timings read 3840×2160, and 300 frames captured at 60.00 fps with no gaps or repeats. The card scales 4096-wide input to 3840 before the FPGA (stage 3), so the driver's own 3840 clamp for 4 MiB buffers can't be exercised with this card.
