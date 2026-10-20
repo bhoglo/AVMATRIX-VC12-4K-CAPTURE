@@ -383,3 +383,24 @@ PS5 at 3840×2160p59.94, OBS closed, IOMMU `DMA-FQ`. `tests/zctest.sh` ran 600 f
 | PS5 to 1080p and back to 4K | Zero-copy stepped aside for the switch and came back by itself at 4K, again with 0 ms CPU. One zero-copy frame completed with an error (the frame in flight at a switch); no late writes. The canary logged two 2 KiB blocks in DMA buffer 0, at 0xfe000 and 0x3f5000. Those are register 9 × 16 for the 1080p and 4K quarters, the new cap. Before register 9 followed the quarter size, the same switches wrote runs up to 0x47d7ff. |
 | Suspend and resume with OBS open | Card re-initialised and the picture came back. Zero-copy resumed with no failures or late writes. OBS's consumer counted 93 frames with no buffer queued, once, right after the wake-up, before OBS had re-queued its buffers. |
 | Kernel log | No `IO_PAGE_FAULT`, no warnings |
+
+## Stage 6: first session (driver `47006b7`, srcversion `ECF3B4B0DE67246B58F850D`)
+
+DKMS version `1.0.0.230324.6.0` on 7.2.10, with `zero_copy=1` set in `/etc/modprobe.d/hws.conf` (6.1 makes it default off). Operator session on 2026-10-19: OBS capturing the Switch 2 at 3840×2160, the console switched to 1080p and back, then three suspend and resume cycles.
+
+- **Operator:** picture and audio normal throughout, including after each resume. No audio problem at the resolution changes.
+- **Kernel log, this boot:** no `IO_PAGE_FAULT`, no BUG or WARNING line, no "HDCP active" line across the three suspends (6.7), and no "zero_copy is on but unavailable" line (the 6.1 gate passes on this card). Each resume logged "resumed, card re-initialised".
+- **debugfs `status`, after the session:**
+
+| Counter | Value |
+|---|---|
+| Frames / lost | 6534 / 3 |
+| Zero-copy frames / failed / late writes | 5887 / 0 / 0 |
+| Interrupt sources other than bits 0 and 8 (6.14) | 0 |
+| Frames failed for a late copy (6.15) | 0 |
+| Audio gaps filled with silence | 3 |
+
+- **`modinfo`:** `zero_copy` and `debug_dma` both describe themselves as default off.
+- **`lspci -vv`:** `RlxdOrd+` on the card, now as the PCI core leaves it (6.12 removed the driver's write).
+- **Seen in passing:** each rate-limited `LOG_STATUS` call still prints the V4L2 core's empty "START STATUS" and "END STATUS" lines. Cosmetic.
+- **Not yet run:** the 6.2 simulated reset, the 6.3 SIGSTOP and start/stop tests, the 6.4 unbind test, the 6.6 and 6.5 test builds, `framecheck.py` runs, and the debug-kernel pass (6.16).
