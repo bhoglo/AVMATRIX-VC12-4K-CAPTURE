@@ -5,7 +5,7 @@
 #
 # Start OBS capturing first. Every INTERVAL_MIN minutes, and at the end,
 # prints one row: the card's frame rate over the interval, frames lost,
-# zero-copy failures, OBS's resident memory, available system memory, and
+# zero-copy failures, audio gaps the driver filled with silence, OBS's resident memory, available system memory, and
 # the IO_PAGE_FAULT, stray-write and PipeWire error counts since the start.
 set -uo pipefail
 BDF=${BDF:-0000:0b:00.0}
@@ -21,13 +21,14 @@ obs_rss() { local p; p=$(pgrep -n -x obs) && awk '/VmRSS/{printf "%d MiB", $2/10
 
 pgrep -x obs >/dev/null || { echo "start OBS capturing first"; exit 1; }
 echo "soak: ${hours} h, a row every ${every} min, from $since; $(st | grep '^input')"
-printf '| time | fps | lost | zero-copy failed | OBS RSS | MemAvailable | IO_PAGE_FAULT | stray writes | PipeWire errors |\n'
-printf '|---|---|---|---|---|---|---|---|---|\n'
+printf '| time | fps | lost | zero-copy failed | audio gaps | OBS RSS | MemAvailable | IO_PAGE_FAULT | stray writes | PipeWire errors |\n'
+printf '|---|---|---|---|---|---|---|---|---|---|\n'
 row() {
     local f1 t1
     f1=$(num "frames:" 2) t1=$(date +%s.%N)
-    printf '| %s | %s | %s | %s | %s | %s MiB | %s | %s | %s |\n' "$(date +%H:%M)" \
+    printf '| %s | %s | %s | %s | %s | %s | %s MiB | %s | %s | %s |\n' "$(date +%H:%M)" \
         "$(echo "scale=2; ($f1 - $f0) / ($t1 - $t0)" | bc)" "$(num "frames:" 4)" "$(st | sed -nE 's/^zero-copy:.* failed ([0-9]+).*/\1/p')" \
+        "$(st | sed -nE 's/^audio: gaps filled with silence: ([0-9]+).*/\1/p')" \
         "$(obs_rss)" "$(awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo)" \
         "$(kcount IO_PAGE_FAULT)" "$(kcount 'stray DMA write')" "$(pwerr)"
     f0=$f1 t0=$t1
