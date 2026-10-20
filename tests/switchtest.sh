@@ -17,7 +17,7 @@ DEV=${DEV:-/dev/video0}
 DBG=/sys/kernel/debug/hws-$BDF
 w=${1:?width} h=${2:?height} want=${3:-40}
 OUT=$(mktemp -d)
-trap '[ -n "${LOG:-}" ] && cp "$OUT/cap.log" "$LOG"; rm -rf "$OUT"' EXIT
+trap '[ -n "${LOG:-}" ] && [ -e "$OUT/cap.log" ] && cp "$OUT/cap.log" "$LOG"; rm -rf "$OUT"' EXIT
 
 pgrep -x obs >/dev/null && { echo "close OBS first"; exit 1; }
 st() { sudo -n cat "$DBG/status"; }
